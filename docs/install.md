@@ -7,7 +7,7 @@ place, never overwrites what you made yourself, and keeps a backup of anything i
 
 - macOS or Linux, the Herdr app 0.1.12 or newer (`herdr-app --version`) with herdr-core 0.1.17 or newer
   (`hc --version`). Open Herdr once first, so it writes its home (`~/.config/herdr-app`).
-- python3 3.8 or newer, git, and Claude Code or Codex, installed and signed in.
+- python3 3.8 or newer, git, and Claude Code, Codex or OMP ([oh-my-pi](https://github.com/can1357/oh-my-pi)), installed and signed in.
 - bun (the service and the web app; the installer installs it from bun.sh when it's missing), and Tailscale for the
   web app.
 - Optional, per add-on: `gh` (pull requests), node (the task browser in the window), bun,
@@ -41,6 +41,15 @@ What goes where:
 | Role instructions | `~/.config/herdr-core/templates/{assistant,worker,reviewer}.md`; one you edited is kept, the new one goes beside it as `.new` |
 | Helpers on the PATH | links in `~/.local/bin`: `herdr-task`, `herdr-artifact`, `herdr-secret`, `herdr-browser`, `shepherdr` |
 | Question cards | hooks in `~/.claude/settings.json` (SessionStart, PermissionRequest) and `~/.codex/hooks.json` (SessionStart, PermissionRequest); `--no-hooks` leaves them out. Codex asks once to trust a new hook, and needs `hooks = true` in `~/.codex/config.toml` |
+
+OMP is supported as a third agent CLI: its chat reads OMP's own session logs (`~/.omp/agent/sessions`), and
+`herdr-task add/start --agent omp` and Settings › Agents start it with `--model`, `--thinking` and
+`--approval-mode`. OMP has no permission hook: its extension events (`tool_approval_requested`,
+`tool_approval_resolved`) are observability only, with no way to answer an approval. So questions and permission
+requests from an OMP agent stay in its terminal and are not answered on a chat card; the add-on's card row above
+covers Claude Code and Codex. OMP's chat also has no Fork or Rewind: OMP 18 has no flag for either, so Shepherdr
+leaves them out instead of guessing. Reactions reach an agent as tags its role instructions teach; OMP's own
+instructions don't, so an OMP agent won't react.
 | agent-browser (the task browser) | one already on the PATH when it's 0.41.1 up to 0.41.x, else Shepherdr's own copy in `~/.local/share/shepherdr/agent-browser/<version>/` and Chrome for Testing (`agent-browser install`, into `~/.agent-browser`). See [The task browser's agent-browser](#the-task-browsers-agent-browser) |
 | The guard (`--guard`, opt-in) | `~/.local/bin/herdr-app`: refuses to open a window with another HOME, `HERDR_APP_HOME` or core session (it can overwrite every machine's spaces); subcommands pass through |
 

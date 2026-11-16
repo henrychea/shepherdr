@@ -2,7 +2,7 @@
 // rules both the window's model menu (lib/agent.js, mods/chat-models) and the web app's use. Reading an agent's own
 // settings and restarting it run where each side runs commands (lib/agent.js, service/agents.ts).
 // Shared core: the source is core/agents.js; bin/sync-shared copies it into the mods in lib/COPIES.
-export const NAMES = { claude: "Claude Code", codex: "Codex" };
+export const NAMES = { claude: "Claude Code", codex: "Codex", omp: "OMP" };
 
 // Claude Code's current models, as its /model menu offers them. `id` is what --model gets;
 // `match` the names a running agent may report for it.
@@ -14,19 +14,25 @@ const CLAUDE_MODELS = [
   { id: "haiku", name: "Haiku 5.5", match: ["haiku", "claude-haiku-5-5"] },
 ];
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+// OMP's thinking levels (--thinking; also what a model's own list says) and its approval modes.
+const OMP_THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"];
+const OMP_DEFAULT_THINKING = ["low", "medium", "high", "xhigh", "max"];
 // Permission modes as each CLI has them (Claude: --permission-mode, or
-// --dangerously-skip-permissions for full access; Codex: its sandbox and approvals).
+// --dangerously-skip-permissions for full access; Codex: its sandbox and approvals; OMP: --approval-mode).
 const PERMS = {
   claude: [{ id: "manual", label: "Ask" }, { id: "auto", label: "Auto" }, { id: "acceptEdits", label: "Accept edits" },
     { id: "plan", label: "Plan" }, { id: "bypassPermissions", label: "Full access" }],
   codex: [{ id: "read-only", label: "Read only" }, { id: "auto", label: "Auto" }, { id: "full", label: "Full access" }],
+  omp: [{ id: "always-ask", label: "Ask" }, { id: "always-ask-cached", label: "Ask once cached" },
+    { id: "write", label: "Write" }, { id: "yolo", label: "Full access" }],
 };
 // A permission mode carried to the other agent when the agent is switched: its nearest mode there (auto stays auto,
 // full access stays full access, Claude's accept edits is Codex's auto, plan and read only swap), else that agent's
 // default (Claude's ask has no Codex match). Never silently drops auto to ask on a round trip (#758).
 const PERM_ACROSS = {
-  claude: { "read-only": "plan", auto: "auto", full: "bypassPermissions" },
-  codex: { plan: "read-only", auto: "auto", acceptEdits: "auto", bypassPermissions: "full" },
+  claude: { "read-only": "plan", auto: "auto", full: "bypassPermissions", "always-ask-cached": "auto", write: "acceptEdits", yolo: "bypassPermissions" },
+  codex: { plan: "read-only", auto: "auto", acceptEdits: "auto", bypassPermissions: "full", "always-ask-cached": "auto", write: "auto", yolo: "full" },
+  omp: { manual: "always-ask", auto: "write", acceptEdits: "write", plan: "always-ask", bypassPermissions: "yolo", "read-only": "always-ask", full: "yolo" },
 };
 export function permAcross(perm, agent, permDefault) {
   return PERM_ACROSS[agent]?.[perm] ?? (PERMS[agent]?.some((p) => p.id === perm) ? perm : null) ?? permDefault?.[agent] ?? null;
@@ -69,6 +75,29 @@ export const DEFAULTS = `
 if [ "$1" = claude ]; then
   f="$HOME/.claude/settings.json"
   command -v jq >/dev/null && [ -f "$f" ] && jq -r '"model\\t\\(.model // "")", "effort\\t\\(.effortLevel // "")", "fast\\t\\(if .fastMode == true then "on" else "" end)", "per\\t\\(.modelSettings // {} | with_entries(.value |= (.effortLevel // null)) | tojson)", "mode\\t\\(.permissions.defaultMode // "")"' "$f" 2>/dev/null
+elif [ "$1" = omp ]; then
+  a="\${PI_CODING_AGENT_DIR:-}"; [ -n "$a" ] || a="\${PI_CONFIG_DIR:+$PI_CONFIG_DIR/agent}"; [ -n "$a" ] || a="$HOME/.omp/agent"
+  lim=""; command -v timeout >/dev/null 2>&1 && lim="timeout 15"
+  if command -v omp >/dev/null 2>&1; then
+    r=$($lim omp config get modelRoles 2>/dev/null)
+    [ -n "$r" ] && printf 'roles\\t%s\\n' "$r"
+    t=$($lim omp config get defaultThinkingLevel 2>/dev/null | head -1)
+    [ -n "$t" ] && printf 'thinking\\t%s\\n' "$t"
+    v=$($lim omp config get tools.approvalMode 2>/dev/null | head -1)
+    [ -n "$v" ] && printf 'mode\\t%s\\n' "$v"
+    m=$($lim omp models --json 2>/dev/null)
+    [ -n "$m" ] && printf 'models\\t%s\\n' "$m"
+  else
+    # Its own files when the CLI isn't on this shell's PATH (herdr-task's machine, another user).
+    f="$a/config.yml"
+    if [ -f "$f" ]; then
+      r=$(awk '/^[^[:space:]#][^:]*:/{ s=$1; sub(/:.*/, "", s) }
+        s=="modelRoles" && $1=="default:" { sub(/^[^:]*:[[:space:]]*/, ""); gsub(/^["\\047]|["\\047]$/, ""); print; exit }' "$f")
+      [ -n "$r" ] && printf 'roles\\t{"default":"%s"}\\n' "$r"
+      v=$(sed -n 's/^[[:space:]]*approvalMode:[[:space:]]*//p' "$f" 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*//; s/^["\\047]//; s/["\\047]$//')
+      [ -n "$v" ] && printf 'mode\\t%s\\n' "$v"
+    fi
+  fi
 else
   f="$HOME/.codex/config.toml"
   for k in model model_reasoning_effort service_tier sandbox_mode approval_policy; do
@@ -101,6 +130,30 @@ export function parseDefaults(kind, stdout) {
       }));
     } catch {}
   }
+  if (kind === "omp") {
+    // OMP's config names a role's model as provider/model:thinking (the level being optional).
+    let raw = String(out.roles ?? "");
+    try { const roles = JSON.parse(raw); raw = String(roles?.default ?? ""); } catch {}
+    const role = /^(.*):(off|minimal|low|medium|high|xhigh|max|auto)$/.exec(raw);
+    const model = role ? role[1] : raw || null;
+    const effort = role?.[2] || out.thinking || null;
+    // OMP's own model catalog (omp models --json): its selector is what --model takes.
+    let all = null;
+    if (out.models) {
+      try {
+        const rows = JSON.parse(out.models).models ?? [];
+        const seen = new Set();
+        all = rows.filter((m) => !m.kind || m.kind === "chat").flatMap((m) => {
+          const id = String(m.selector ?? `${m.provider}/${m.id}`);
+          if (!id || seen.has(id)) return [];
+          seen.add(id);
+          return [{ id, label: m.name || m.id || id, efforts: Array.isArray(m.thinking) && m.thinking.length ? m.thinking : OMP_DEFAULT_THINKING,
+            defaultEffort: effort, fast: false, window: m.contextWindow ?? null }];
+        });
+      } catch {}
+    }
+    return { model, effort, mode: out.mode || "yolo", models: all };
+  }
   return kind === "claude"
     ? { model: out.model || null, effort: out.effort || null, fast: Boolean(out.fast), per: parsePer(out.per), mode: out.mode || null }
     : { model: out.model || null, effort: out.model_reasoning_effort || null, fast: ["fast", "priority"].includes(out.service_tier),
@@ -126,6 +179,15 @@ export function current(kind, argv, meta, dflt) {
     return { agent: "claude", model: meta.model ?? alias, alias, effort: meta.effort ?? flag(argv, "--effort") ?? per ?? dflt.effort,
       fast: Boolean(fast), perm: perm === "default" ? "manual" : perm, used: meta.used ?? null, window: meta.window ?? (big ? 1000000 : 200000) };
   }
+  if (kind === "omp") {
+    const model = meta.model ?? flag(argv, "--model") ?? dflt.model;
+    const known = dflt.models?.find((m) => m.id === model) ?? null;
+    const perm = argv.includes("--auto-approve") ? "yolo"
+      : flag(argv, "--approval-mode") ?? dflt.mode ?? "yolo";
+    return { agent: "omp", model, label: known?.label ?? null, perm,
+      effort: meta.effort ?? flag(argv, "--thinking") ?? dflt.effort,
+      fast: false, used: meta.used ?? null, window: meta.window ?? known?.window ?? null };
+  }
   const o = overrides(argv);
   const tier = o.service_tier;
   const model = meta.model ?? flag(argv, "-m", "--model") ?? o.model ?? dflt.model;
@@ -138,7 +200,7 @@ export function current(kind, argv, meta, dflt) {
 }
 
 // An effort level as the person reads it: "xhigh" -> "Extra high". The CLIs still get the raw value.
-const LEVELS = { minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max", ultra: "Ultra", none: "None" };
+const LEVELS = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max", ultra: "Ultra", auto: "Auto", none: "None" };
 export function levelName(e) {
   return e ? LEVELS[e] ?? e[0].toUpperCase() + e.slice(1) : null;
 }
@@ -167,6 +229,13 @@ export function menuFor(agent, dflt, current = null) {
     if (current && !models.some((m) => m.id === current)) models.unshift({ id: current, name: modelName(current), efforts: CLAUDE_EFFORTS, defaultEffort: dflt?.effort ?? null, fast: false });
     return { name: NAMES.claude, perms: PERMS.claude, models };
   }
+  if (agent === "omp") {
+    // Its own catalog (omp models --json); a model typed by id stays while it runs.
+    const all = (dflt?.models ?? []).map((m) => ({ id: m.id, name: m.label ?? m.id, efforts: m.efforts?.length ? m.efforts : OMP_DEFAULT_THINKING,
+      defaultEffort: m.defaultEffort ?? dflt?.effort ?? null, fast: false }));
+    if (current && !all.some((m) => m.id === current)) all.unshift({ id: current, name: current, efforts: OMP_DEFAULT_THINKING, defaultEffort: dflt?.effort ?? null, fast: false });
+    return { name: NAMES.omp, perms: PERMS.omp, models: all };
+  }
   const all = (dflt?.models ?? []).map((m) => ({ id: m.id, name: m.label, efforts: m.efforts?.length ? m.efforts : ["low", "medium", "high", "xhigh"],
     defaultEffort: m.defaultEffort ?? dflt?.effort ?? null, fast: m.fast }));
   if (current && !all.some((m) => m.id === current)) all.unshift({ id: current, name: current, efforts: ["low", "medium", "high", "xhigh"], defaultEffort: dflt?.effort ?? null, fast: false });
@@ -175,7 +244,8 @@ export function menuFor(agent, dflt, current = null) {
 
 // The levels a model typed by id gets: its agent's usual ones.
 export function typedModel(agent, id) {
-  return { id, name: agent === "claude" ? modelName(id) : id, efforts: agent === "claude" ? CLAUDE_EFFORTS : ["low", "medium", "high", "xhigh"], defaultEffort: null, fast: false, typed: true };
+  const efforts = agent === "claude" ? CLAUDE_EFFORTS : agent === "omp" ? OMP_DEFAULT_THINKING : ["low", "medium", "high", "xhigh"];
+  return { id, name: agent === "claude" ? modelName(id) : id, efforts, defaultEffort: null, fast: false, typed: true };
 }
 
 // The person's picks in the model menus (the window's and the web's alike), in PICKS_FILE under the
@@ -277,11 +347,18 @@ const CLAUDE_VALUE = new Set(["--add-dir", "--mcp-config", "--append-system-prom
   "--fallback-model", "--output-format", "--input-format", "--name", "--setting-sources", "--betas", "--debug-file"]);
 const CODEX_VALUE = new Set(["-c", "--config", "-m", "--model", "-p", "--profile", "-s", "--sandbox", "-a", "--ask-for-approval",
   "-C", "--cd", "--add-dir", "-i", "--image", "--enable", "--disable", "--local-provider", "--oss"]);
+// OMP: what a restart chooses again, what it keeps, and which flags' next word is their value.
+const OMP_DROP = new Set(["--model", "--thinking", "--approval-mode", "--resume", "-r", "--session", "--fork", "--restore"]);
+const OMP_BARE = new Set(["--continue", "-c", "--auto-approve"]);
+const OMP_VALUE = new Set(["--smol", "--slow", "--plan", "--prewalk-into", "--plan-yolo-into", "--provider", "--api-key",
+  "--system-prompt", "--system-prompt-template", "--append-system-prompt", "--profile", "--alias", "--cwd", "--mode", "--config",
+  "--add-dir", "--session-dir", "--models", "--tools", "--service-tier", "--hook", "--extension", "-e", "--skills", "--export",
+  "--spinner-interval", "--max-fps", "--motion", "--max-time", "--warn-cost", "--max-cost"]);
 
-// Where the agent's own word (claude, codex) is in argv: a terminal's argv starts with what launched it (nice,
+// Where the agent's own word (claude, codex, omp) is in argv: a terminal's argv starts with what launched it (nice,
 // sh -c, env, the person's `bash -ic`), whose words are no agent flags (#1001: its -ic was Codex's `-i c`, an image).
 function agentAt(argv) {
-  return argv.findIndex((a, i) => (i === 0 || !String(a).startsWith("-")) && /^(claude|codex)$/.test(String(a).split("/").pop()));
+  return argv.findIndex((a, i) => (i === 0 || !String(a).startsWith("-")) && /^(claude|codex|omp)$/.test(String(a).split("/").pop()));
 }
 
 // The old agent's flags worth keeping (permissions, folders, ...), without what is chosen again
@@ -296,6 +373,12 @@ function kept(kind, argv) {
       if (CLAUDE_DROP.has(a)) { if (rest[i + 1] && !rest[i + 1].startsWith("-")) i++; continue; }
       if ([...CLAUDE_DROP].some((f) => a.startsWith(f + "="))) continue;
       if (CLAUDE_VALUE.has(a)) { out.push(a, rest[++i]); continue; }
+      if (a.startsWith("-")) out.push(a);
+    } else if (kind === "omp") {
+      if (OMP_BARE.has(a)) continue;
+      if (OMP_DROP.has(a)) { if (rest[i + 1] && !rest[i + 1].startsWith("-")) i++; continue; }
+      if ([...OMP_DROP].some((f) => a.startsWith(f + "="))) continue;
+      if (OMP_VALUE.has(a)) { out.push(a, rest[++i]); continue; }
       if (a.startsWith("-")) out.push(a);
     } else {
       if (i === 0 && (a === "resume" || a === "fork")) { if (rest[1] && !rest[1].startsWith("-")) i++; continue; }
@@ -332,6 +415,12 @@ function stripSession(kind, argv) {
       if (a === "--continue" || a === "-c") { resumed = true; continue; }
       if (a === "--fork-session") continue;
       if (CLAUDE_VALUE.has(a) || ["--model", "--effort", "--settings", "--permission-mode"].includes(a)) { out.push(a, rest[++i]); continue; }
+    } else if (kind === "omp") {
+      if (a === "--resume" || a === "-r" || a === "--session" || a === "--fork" || a === "--restore") { resumed = true; if (rest[i + 1] && !rest[i + 1].startsWith("-")) i++; continue; }
+      if (/^--(resume|session|fork|restore)=/.test(a)) { resumed = true; continue; }
+      if (a === "--continue" || a === "-c") { resumed = true; continue; }
+      if (OMP_VALUE.has(a)) { out.push(a, rest[++i]); continue; }
+      if (a === "--model" || a === "--thinking" || a === "--approval-mode") { out.push(a, rest[++i]); continue; }
     } else {
       if (i === 0 && (a === "resume" || a === "fork")) { resumed = true; continue; }
       if (a === "--last") continue;
@@ -358,6 +447,14 @@ export function argvFor(pick, old) {
     if (same && old.session) return { argv: [...a, "--resume", old.session], resume: true, base: a };
     return { argv: a, resume: false, base: a };
   }
+  if (pick.agent === "omp") {
+    const a = ["omp", ...flags];
+    if (pick.model) a.push("--model", pick.model);
+    if (pick.effort) a.push("--thinking", pick.effort);
+    if (pick.perm) a.push("--approval-mode", pick.perm);
+    if (same && old.session) return { argv: [...a, "--resume", old.session], resume: true, base: a };
+    return { argv: a, resume: false, base: a };
+  }
   // Codex runs its commands outside hc without --no-daemon (as herdr-task and restart.sh add).
   const a = [...flags, "--no-daemon"];
   if (pick.model) a.push("-m", pick.model);
@@ -371,7 +468,7 @@ export function argvFor(pick, old) {
   return { argv: ["codex", ...a], resume: false, base: ["codex", ...a] };
 }
 
-// The conversation's id, from its log's file name.
+// The conversation's id, from its log's file name (OMP: <timestamp>_<uuid>.jsonl).
 export function sessionOf(kind, path) {
   const m = kind === "claude" ? /([0-9a-f-]{36})\.jsonl$/.exec(path ?? "") : /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/.exec(path ?? "");
   return m ? m[1] : null;
@@ -381,11 +478,18 @@ export function sessionOf(kind, path) {
 // and speed, resuming `session`.
 export function resumeArgv(kind, argv, session) {
   const out = stripSession(kind, argv)?.out ?? [kind];
-  return kind === "claude" ? [...out, "--resume", session] : [out[0], "resume", ...out.slice(1), session];
+  if (kind === "claude") return [...out, "--resume", session];
+  if (kind === "omp") return [...out, "--resume", session];
+  return [out[0], "resume", ...out.slice(1), session];
 }
 
-// A copy of the conversation in a new tab beside this one, through the CLI's own fork.
+// A copy of the conversation in a new tab beside this one, through the CLI's own fork. OMP 18 has no fork flag:
+// Shepherdr doesn't offer one (canFork), and this returns null rather than inventing a new conversation.
+export const canFork = (kind) => kind === "claude" || kind === "codex";
+// The CLI's own rewind on one of the person's messages: Claude Code's /rewind, Codex's Esc Esc. OMP has neither.
+export const canRewind = (kind) => kind === "claude" || kind === "codex";
 export function forkArgv(kind, argv, session) {
+  if (!canFork(kind)) return null;
   argv = argv ?? [];
   // The same model, effort and speed as the original.
   const same = kind === "claude"
@@ -402,7 +506,7 @@ export function forkArgv(kind, argv, session) {
 // #1050: a fork of a task's conversation while the task's agent runs works in the same folder, so two agents would
 // edit one worktree. The task's live agent (a terminal record from `all`, reviewers and helpers aside) when `t` is a
 // task's terminal, else null: the fork then asks first (FORK_LIVE).
-const AGENT_APPS = new Set(["claude-code", "claude", "codex"]);
+const AGENT_APPS = new Set(["claude-code", "claude", "codex", "omp", "oh-my-pi"]);
 export function liveTaskAgent(t, all) {
   const task = t?.labels?.["herdr.task"];
   if (!task) return null;

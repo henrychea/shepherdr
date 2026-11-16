@@ -3502,6 +3502,49 @@ class FastOffIsSaid(unittest.TestCase):
         self.assertIn('{"fastMode": false}', argv_for({"agent": "claude", "fast": False}))
 
 
+class OmpAgent(unittest.TestCase):
+    """OMP as a task's CLI: its own argv, resume, reviewer and --agent selection."""
+
+    def test_argv_for_model_thinking_and_approval(self):
+        sys.path.insert(0, BIN)
+        from herdr_task.settings import argv_for
+        self.assertEqual(argv_for({"agent": "omp", "model": "example/model", "effort": "max", "perm": "yolo"}),
+                         ["omp", "--model", "example/model", "--thinking", "max", "--approval-mode", "yolo"])
+        self.assertEqual(argv_for({"agent": "omp"}), ["omp"])
+
+    def test_start_agent_omp_picks_its_model_and_effort(self):
+        sys.path.insert(0, BIN)
+        from herdr_task.settings import worker_argv
+        class Store:
+            loc = {"folder": os.path.join(tempfile.mkdtemp(), "repo")}
+        os.makedirs(Store.loc["folder"])
+        self.assertEqual(worker_argv(Store(), {"agent": "omp", "model": "example/model", "effort": "high"}, agent="omp"),
+                         ["omp", "--model", "example/model", "--thinking", "high"])
+
+    def test_resume_and_crash_resume_build_omp_argv(self):
+        sys.path.insert(0, BIN)
+        from herdr_task import launch, revive
+        self.assertEqual(launch.resume_argv(["omp", "--model", "m"], "S1"), ["omp", "--model", "m", "--resume", "S1"])
+        kind, base = revive.base_argv(["omp", "--cwd", "/work", "--resume", "old", "--thinking", "low"])
+        self.assertEqual(kind, "omp")
+        self.assertEqual(base, ["omp", "--cwd", "/work", "--thinking", "low"])
+        self.assertEqual(revive.resume_argv("omp", base, "S2"), ["omp", "--cwd", "/work", "--thinking", "low", "--resume", "S2"])
+
+    def test_omp_reviewer_is_its_read_only_tools(self):
+        sys.path.insert(0, BIN)
+        from herdr_task.settings import reviewer_command
+        cmd = reviewer_command("omp", "example/model", "high")
+        self.assertIn("omp --tools read,grep,glob,find,web_search", cmd)
+        self.assertIn("--model example/model", cmd)
+        self.assertIn("--thinking high", cmd)
+
+    def test_omp_session_id_from_its_log_name(self):
+        sys.path.insert(0, BIN)
+        from herdr_task.sessions import OMP_UUID
+        m = OMP_UUID.search("/home/me/.omp/agent/sessions/-work/2026-11-16T10-00-00-000Z_01a1e34c-06f1-7474-b9e5-4f8996e2dfe6.jsonl")
+        self.assertEqual(m.group(1), "01a1e34c-06f1-7474-b9e5-4f8996e2dfe6")
+
+
 class AcceptCardArtifacts(unittest.TestCase):
     """SHEP-96: the Accept card links the task's other artifacts (a research report) beside its proof."""
 

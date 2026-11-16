@@ -1054,7 +1054,7 @@ export default class Chat extends View {
     if (this.lostTried.has(addr)) return false;
     this.lostTried.add(addr);
     if (!t) { try { t = JSON.parse((await hc(["get", addr, "--json"])).stdout || "null"); } catch {} }
-    const kind = cliOf({ agent: (t?.argv ?? []).map((a) => String(a).split("/").pop()).find((a) => /^(claude|codex)$/.test(a)) });
+    const kind = cliOf({ agent: (t?.argv ?? []).map((a) => String(a).split("/").pop()).find((a) => /^(claude|codex|omp)$/.test(a)) });
     const fresh = kind ? agent.freshArgv(kind, t?.argv) : null;
     if (!fresh) return false;
     if (t.state !== "live" && (t.exit_code ?? 1) === 0) return false;
@@ -2328,6 +2328,7 @@ export default class Chat extends View {
   // the prompts with the newest last (Up once per later prompt); Codex's Esc Esc browses the
   // transcript from the last prompt (Left once per later prompt). Then the terminal shows it.
   rewind(row, cx) {
+    if (!agent.canRewind(this.kind)) { toast({ title: "Can't rewind", body: "OMP has no rewind from here.", level: "info" }); return; }
     if (this.status() === "working") { toast({ title: "The agent is working", body: "Stop it first, then rewind.", level: "info" }); return; }
     const users = (this.conv?.items ?? []).filter((x) => x.kind === "user" && !x.from && !/^\//.test(x.text ?? ""));
     const i = users.findIndex((u) => u.id === row.of);
@@ -2348,6 +2349,7 @@ export default class Chat extends View {
 
   // A copy of this conversation, continued in a new tab of this space (the CLI's own fork).
   fork(cx) {
+    if (!agent.canFork(this.kind)) { toast({ title: "Can't fork", body: "OMP has no fork: start a new chat, or resume this conversation.", level: "info" }); return; }
     const session = agent.sessionOf(this.kind, this.path);
     if (!session) { toast({ title: "Can't fork", body: "This conversation has no saved session.", level: "info" }); return; }
     const tab = panes().find((p) => p.pane === this.myPane())?.tab;
@@ -2747,12 +2749,12 @@ export default class Chat extends View {
       try {
         const stale = !this.pickCache || Date.now() - this.pickCache.at > 60000 || this.pickCache.machine !== this.machine;
         if (stale) {
-          const [claude, codex, known] = await Promise.all([agent.defaults("claude", this.machine), agent.defaults("codex", this.machine),
-            knownAgents({ on: this.machine }).catch(() => [])]);
+          const [claude, codex, omp, known] = await Promise.all([agent.defaults("claude", this.machine), agent.defaults("codex", this.machine),
+            agent.defaults("omp", this.machine), knownAgents({ on: this.machine }).catch(() => [])]);
           const prog = (key) => known.find((a) => a.key === key || (a.run ?? [])[0] === key);
-          this.pickCache = { at: Date.now(), machine: this.machine, dflts: { claude, codex },
-            icons: Object.fromEntries(["claude", "codex"].map((k) => [k, { icon: prog(k)?.icon ?? null, tint: Boolean(prog(k)?.tint) }])),
-            installed: Object.fromEntries(["claude", "codex"].map((k) => [k, prog(k) ? prog(k).installed !== false : true])) };
+          this.pickCache = { at: Date.now(), machine: this.machine, dflts: { claude, codex, omp },
+            icons: Object.fromEntries(["claude", "codex", "omp"].map((k) => [k, { icon: prog(k)?.icon ?? null, tint: Boolean(prog(k)?.tint) }])),
+            installed: Object.fromEntries(["claude", "codex", "omp"].map((k) => [k, prog(k) ? prog(k).installed !== false : k !== "omp"])) };
         }
         const { dflts, icons, installed } = this.pickCache;
         if (this.kind) dflts[this.kind] = this.dflt ?? dflts[this.kind];
@@ -2760,7 +2762,7 @@ export default class Chat extends View {
         const offline = this.machine && !online(this.machine) ? this.machine : null;
         const currentRow = agent.rowFor(c.agent, c);
         // Installed agents only (and always the one running).
-        const menus = Object.fromEntries(["claude", "codex"].filter((k) => k === c.agent || installed[k])
+        const menus = Object.fromEntries(["claude", "codex", "omp"].filter((k) => k === c.agent || installed[k])
           .map((k) => [k, agent.menuFor(k, dflts[k], k === c.agent ? currentRow : null)]));
         // As tall as the menu can get (chat-models' sizes): border and padding, another machine's
         // offline line, agent tabs, search, the list (it scrolls past 8 rows), separator, Reasoning header
@@ -2770,7 +2772,7 @@ export default class Chat extends View {
           at: at ? { x: Math.max(8, at.x - W + 90), y: Math.max(8, at.y - H - 10) } : "pointer",
           props: { pane: this.pickKey(), offline, width: W, height: H, select: name ? findModel(menus, name) : null,
             current: { agent: c.agent, model: currentRow, effort: c.effort ?? null, fast: c.fast, perm: c.perm ?? null },
-            menus, icons, permDefault: { claude: dflts.claude?.mode ?? "manual", codex: "auto" } } });
+            menus, icons, permDefault: { claude: dflts.claude?.mode ?? "manual", codex: "auto", omp: dflts.omp?.mode ?? "yolo" } } });
       } finally {
         this.picking = false;
         cx.notify();
@@ -2978,6 +2980,13 @@ export default class Chat extends View {
       if (x.kind === "news") { const r = news.inline.get(x.id); if (r) { dated(x.at); out.push(r); } continue; }
       // An Autopilot wake: one quiet line, never its words (core/chat-log.js pilotLine).
       if (x.kind === "pilot") { dated(x.at); out.push({ kind: "pilot", id: x.id, text: pilotLine(x) }); continue; }
+      // OMP archived the conversation and carries on: a quiet line where it happened, its summary's first words.
+      if (x.kind === "compact") {
+        dated(x.at);
+        const firstLine = String(x.text ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+        out.push({ kind: "note", id: x.id, text: `Compacted · ${firstLine.length > 160 ? `${firstLine.slice(0, 159)}…` : firstLine}` });
+        continue;
+      }
       if (x.kind !== "mark") dated(x.at);
       // A message this agent sent another (SHEP-27): "Assistant → SHEP-4", drawn as another agent's message is.
       if (x.kind === "sent") {
@@ -3021,7 +3030,7 @@ export default class Chat extends View {
         // Its actions in a band row under it (the row above draws them too: band()).
         if (x.text) {
           const bar = { id: `b:${x.id}`, of: x.id, target: x.text, text: x.text, side: "user", at: x.at, pills: this.pills(x.id),
-            acts: bandActs("user", x.text, { from: x.from }) };
+            acts: bandActs("user", x.text, { from: x.from, rewind: agent.canRewind(this.kind) }) };
           out[out.length - 1] = { ...out[out.length - 1], bar };
           out.push({ kind: "band", id: `ab:${x.id}`, bar });
         }
@@ -3057,7 +3066,7 @@ export default class Chat extends View {
         // under its last row.
         if (!(working && i === items.length - 1) && out.length > first) {
           const bar = { id: `b:${x.id}`, of: x.id, target: x.text, text: x.text, side: "agent", at: x.at, pills: this.pills(x.id),
-            acts: bandActs("agent", x.text, { fork: Boolean(this.kind) }) };
+            acts: bandActs("agent", x.text, { fork: agent.canFork(this.kind) }) };
           out[out.length - 1] = { ...out[out.length - 1], bar };
           out.push({ kind: "band", id: `ab:${x.id}`, bar });
         }
@@ -3175,7 +3184,7 @@ export default class Chat extends View {
 
   // Whose ask a card shows: the CLI's short name ("Claude asks").
   cli() {
-    return this.kind === "codex" ? "Codex" : "Claude";
+    return this.kind === "codex" ? "Codex" : this.kind === "omp" ? "OMP" : "Claude";
   }
 
   // The empty box's words: whom it writes to.

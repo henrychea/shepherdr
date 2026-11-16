@@ -12,7 +12,7 @@ from .base import Fail, git, HOME, MAX_RUNNING, WHERE
 
 
 # What each agent key starts by default. Unknown keys run as themselves; --argv overrides.
-AGENTS = {"claude": ["claude"], "codex": ["codex", "--no-daemon"]}
+AGENTS = {"claude": ["claude"], "codex": ["codex", "--no-daemon"], "omp": ["omp"]}
 
 
 # ---- the person's settings ------------------------------------------------------------------
@@ -196,6 +196,16 @@ def argv_for(pick):
         elif perm:
             a += ["-s", "workspace-write", "-a", "on-request"]
         return a
+    if agent == "omp":
+        a = ["omp"]
+        if pick.get("model"):
+            a += ["--model", pick["model"]]
+        if pick.get("effort"):
+            a += ["--thinking", pick["effort"]]
+        perm = pick.get("perm")
+        if perm:
+            a += ["--approval-mode", perm]
+        return a
     return [agent] if agent else None
 
 
@@ -232,7 +242,7 @@ def argv_model(argv):
         nxt = argv[i + 1]
         if a in ("--model", "-m"):
             model = nxt
-        elif a == "--effort":
+        elif a in ("--effort", "--thinking"):
             effort = nxt
         elif a in ("-c", "--config") and nxt.startswith("model_reasoning_effort="):
             effort = nxt.split("=", 1)[1].strip("\"'")
@@ -350,7 +360,7 @@ def cli_here(kind):
     return (((read_checks().get("machines") or {}).get("") or {}).get(kind))
 
 
-CLI_NAMES = {"claude": "Claude Code", "codex": "Codex"}
+CLI_NAMES = {"claude": "Claude Code", "codex": "Codex", "omp": "OMP"}
 LOGIN = {"claude": "claude auth login", "codex": "codex login"}
 
 
@@ -379,7 +389,7 @@ CLAUDE_MODEL = re.compile(r"^(claude-|opus|sonnet|haiku|fable)", re.I)
 def check_reviewer_model(t):
     """add/edit: a reviewer model Codex here can't use is refused when it is set (#948), not found at review time."""
     m = t.get("reviewer_model")
-    if not m or t.get("reviewer") == "claude" or (not t.get("reviewer") and CLAUDE_MODEL.match(m)):
+    if not m or t.get("reviewer") in ("claude", "omp") or (not t.get("reviewer") and CLAUDE_MODEL.match(m)):
         return
     ids = codex_lacks(m)
     if ids:
@@ -439,6 +449,11 @@ def reviewer_command(who, model=None, effort=None, folder=None):
         a = ["claude", "--permission-mode", "plan"]
         a += ["--model", model] if model else []
         a += ["--effort", effort] if effort else []
+    elif who == "omp":
+        # OMP has no sandbox and no read-only shell: its read tools only, so it can't change the work it reviews.
+        a = ["omp", "--tools", "read,grep,glob,find,web_search"]
+        a += ["--model", model] if model else []
+        a += ["--thinking", effort] if effort else []
     else:
         return None
     return shlex.join(a)
@@ -481,7 +496,7 @@ def task_settings(s, t, space=None, argv=None, live=False):
         for f in ("model", "effort"):
             if t.get(f"reviewer_{f}"):
                 rv[f] = t[f"reviewer_{f}"]
-        other = {"claude": "codex", "codex": "claude"}.get(agent)
+        other = {"claude": "codex", "codex": "claude", "omp": "claude"}.get(agent)
         want = rv.get("agent") or (other if other and shutil.which(other) else agent)
         who, said = want, ""
         if want != agent and cli_here(want) == "signed-out":

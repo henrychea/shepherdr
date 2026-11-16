@@ -232,7 +232,7 @@ const readDefaults = async () => {
   try {
     let check: any = {};
     try { check = JSON.parse(readFileSync(where()["cli-check"], "utf8"))?.machines?.[""] ?? {}; } catch {}
-    settings.choices = SC.choicesFrom(await compat.agents!.ownDefaults(), { claude: check.claude !== "missing", codex: check.codex !== "missing" });
+    settings.choices = SC.choicesFrom(await compat.agents!.ownDefaults(), { claude: check.claude !== "missing", codex: check.codex !== "missing", omp: check.omp !== "missing" });
     model.rebuild();
   } catch {}
 };

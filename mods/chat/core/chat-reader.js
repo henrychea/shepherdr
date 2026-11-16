@@ -9,10 +9,16 @@ import { BgJobs } from "./bg-jobs.js";
 
 export const PAGE = 200;
 export const KEEP = 2000;
-export const KINDS = { "claude-code": "claude", claude: "claude", codex: "codex" };
+export const KINDS = { "claude-code": "claude", claude: "claude", codex: "codex", omp: "omp", "oh-my-pi": "omp" };
 
-// The CLI a terminal runs, as the chat knows them ("claude", "codex"), else null.
-export const kindOf = (t) => KINDS[t?.status?.app] ?? KINDS[t?.foreground?.name] ?? null;
+// The CLI a terminal runs, as the chat knows them ("claude", "codex", "omp"), else null.
+// herdr-core may not know OMP's own app name yet: its foreground's command says it then.
+export const kindOf = (t) => {
+  const kind = KINDS[t?.status?.app] ?? KINDS[t?.foreground?.name];
+  if (kind) return kind;
+  const argv = t?.foreground?.argv ?? t?.argv ?? [];
+  return argv.some((a) => String(a).split("/").pop() === "omp") ? "omp" : null;
+};
 
 export class ChatReader {
   constructor(io, addr) {

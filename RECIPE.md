@@ -80,7 +80,7 @@ Left to right, on the theme's `canvas` background, no title bar:
   refuses a folder by the same name that isn't Shepherdr's.
 - Needs python3 3.8+ and git; bun and Tailscale for the web app; gh for pull requests, node for the task browser
   (Shepherdr installs agent-browser 0.41.x and Chrome itself), bun and pw-record/pw-play (Linux) or Apple's command line tools (macOS) for voice and dictation,
-  an ElevenLabs key for calls and dictation. Claude Code or Codex as the agents.
+  an ElevenLabs key for calls and dictation. Claude Code, Codex or OMP as the agents.
 - Two blocks are rewritten while you use it (`tasks-thread-term` points at the shown task's terminal,
   `artifacts-view-body` at the opened artifact): ship them blank.
 

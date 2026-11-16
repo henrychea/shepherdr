@@ -313,7 +313,7 @@ export default class ShepherdrSettings extends View {
   // The CLI a worker runs here, and the other one (an unset Reviewer and Backup use it).
   otherCli() {
     const worker = shepherdrFor(this.cfg, this.scope).worker?.agent ?? "claude";
-    return worker === "codex" ? "claude" : "codex";
+    return worker === "codex" ? "claude" : worker === "omp" ? "claude" : "codex";
   }
 
   // The model buttons start from what applies in this scope. An unset role shows what runs: the

@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LOG, Conversation, records, pilotLine, sendsOf } from "./chat-log.js";
+import { FIND, LOG, Conversation, records, resultText, pilotLine, sendsOf } from "./chat-log.js";
 
 // A Claude Code log as LOG reads it, fed to a Conversation.
 async function read(lines) {
@@ -282,4 +282,104 @@ test("an empty suggest line counts as none, and a suggest line inside a code blo
   expect(agents[0].suggest).toBeUndefined();
   expect(agents[1].suggest).toBeUndefined();
   expect(agents[1].text).toContain('<hc suggest="x"/>');
+});
+
+// ---- OMP: its own session JSONL (synthetic: invented words, the shape OMP 18.20 writes) -------------------------
+// OMP's first line is a fixed 256-byte title slot (255 + "\n"), rewritten in place so byte offsets stay put.
+const omp = (id, ts, more) => ({ type: "message", id, parentId: null, timestamp: `2026-11-16T10:00:${String(ts).padStart(2, "0")}.000Z`, ...more });
+async function readOmp(lines, kind = "omp") {
+  const dir = mkdtempSync(join(tmpdir(), "chat-log-omp-"));
+  const f = join(dir, "2026-11-16T10-00-00-000Z_01a1e34c-06f1-7474-b9e5-4f8996e2dfe6.jsonl");
+  const title = JSON.stringify({ type: "title", v: 1, title: "Fixture", source: "auto", updatedAt: "2026-11-16T10:00:00.000Z", pad: "x" });
+  const slot = title.padEnd(255, " ");
+  expect(Buffer.byteLength(slot)).toBe(255);
+  writeFileSync(f, slot + "\n" + lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  const p = Bun.spawn(["sh", "-c", LOG, "log", "page", f, "999999999999", "50"], { stdout: "pipe", stderr: "ignore" });
+  const out = await new Response(p.stdout).text();
+  const recs = records(out).records;
+  const c = new Conversation(kind);
+  c.feed(recs);
+  return { c, recs, f, dir };
+}
+
+test("an OMP log: its title slot, words, calls, answers and compaction become the chat's items", async () => {
+  const { c, recs, f, dir } = await readOmp([
+    { type: "session", version: 3, id: "01a1e34c-06f1-7474-b9e5-4f8996e2dfe6", timestamp: "2026-11-16T10:00:00.000Z", cwd: "/tmp/fixture" },
+    { type: "model_change", id: "m1", parentId: null, timestamp: "2026-11-16T10:00:00.500Z", model: "example/go-model" },
+    { type: "thinking_level_change", id: "m2", parentId: "m1", timestamp: "2026-11-16T10:00:00.600Z", thinkingLevel: "max", configured: null },
+    omp("u1", 1, { message: { role: "user", content: [{ type: "text", text: "Add the parser" }], attribution: "user" } }),
+    omp("a1", 2, { message: { role: "assistant", content: [
+      { type: "thinking", thinking: "private reasoning" },
+      { type: "text", text: "On it." },
+      { type: "toolCall", id: "call_1", name: "bash", arguments: { command: "printf a", i: "Print a" } },
+      { type: "image", data: "blob:sha256:aa", mimeType: "image/png" },
+    ] } }),
+    omp("r1", 3, { message: { role: "toolResult", toolCallId: "call_1", toolName: "bash",
+      content: [{ type: "text", text: "a\nb" }, { type: "image", data: "blob:sha256:bb", mimeType: "image/png" }], isError: false } }),
+    omp("a2", 4, { message: { role: "assistant", content: [
+      { type: "toolCall", id: "call_2", name: "ask", arguments: { questions: [{ question: "Go?", options: [{ label: "Yes" }, { label: "No" }] }] } },
+    ] } }),
+    omp("r2", 5, { message: { role: "toolResult", toolCallId: "call_2", toolName: "ask",
+      content: [{ type: "text", text: "User answers:\nGo?: Yes" }] } }),
+    { type: "compaction", id: "c1", parentId: "r2", timestamp: "2026-11-16T10:00:06.000Z", summary: "Resume prior conversation. Earlier turns archived." },
+  ]);
+  // the title slot never becomes a message, and its words are nowhere
+  expect(c.items.some((x) => String(x.text ?? "").includes("Fixture"))).toBe(false);
+  expect(c.items.find((x) => x.kind === "user").text).toBe("Add the parser");
+  expect(c.items.find((x) => x.kind === "agent").text).toBe("On it.");
+  expect(c.items.find((x) => x.kind === "ask")).toMatchObject({ text: "Go?\n- Yes\n- No", closed: "answered" });
+  expect(c.items.find((x) => x.answer).text).toBe("Go?: Yes");
+  expect(c.items.find((x) => x.kind === "compact").text).toContain("Resume prior conversation");
+  expect(c.meta).toMatchObject({ model: "example/go-model", effort: "max" });
+  // a call and its result: the row, and what it printed only when the row opens
+  const row = c.items.find((x) => x.kind === "tools");
+  expect(row.steps[0]).toMatchObject({ kind: "run", line: "Print a: printf a" });
+  const p = Bun.spawn(["sh", "-c", LOG, "log", "results", f, String(row.steps[0].out)], { stdout: "pipe", stderr: "ignore" });
+  const out = await new Response(p.stdout).text();
+  const printed = resultText(out.split("\x1e")[1].replace(/^\d+\n/, "").replace(/\n$/, ""), row.steps[0].id);
+  expect(printed).toBe("a\nb\n[image]");
+  // images are emptied in what LOG sends: their blobs stay on disk
+  expect(recs.some((r) => r.kind === "J" && r.data.includes("blob:sha256"))).toBe(false);
+  // a tool result's line is its call id only (no output sent)
+  expect(recs.find((r) => r.kind === "R").data).toBe("call_1");
+  rmSync(dir, { recursive: true });
+});
+
+test("OMP's model and thinking changes drive the line under the box", async () => {
+  const { c, dir } = await readOmp([
+    { type: "model_change", id: "m1", parentId: null, timestamp: "2026-11-16T10:00:00.500Z", model: "example/first" },
+    { type: "message", id: "u1", parentId: "m1", timestamp: "2026-11-16T10:00:01.000Z", message: { role: "user", content: [{ type: "text", text: "Hi" }] } },
+    { type: "model_change", id: "m2", parentId: "u1", timestamp: "2026-11-16T10:00:02.000Z", model: "example/second" },
+    { type: "thinking_level_change", id: "m3", parentId: "m2", timestamp: "2026-11-16T10:00:03.000Z", thinkingLevel: "low" },
+  ]);
+  expect(c.meta).toMatchObject({ model: "example/second", effort: "low" });
+  rmSync(dir, { recursive: true });
+});
+
+test("an OMP branch summary that says nothing shows no row", async () => {
+  const { c, dir } = await readOmp([
+    { type: "branch_summary", id: "b1", parentId: null, timestamp: "2026-11-16T10:00:00.000Z", summary: "" },
+  ]);
+  expect(c.items).toEqual([]);
+  rmSync(dir, { recursive: true });
+});
+
+test("FIND finds an OMP agent's log by its cwd's session folder", async () => {
+  if (process.platform !== "linux") return; // /proc/<pid>/cwd: the fallback the test drives
+  const root = mkdtempSync(join(tmpdir(), "chat-find-omp-"));
+  const home = join(root, "home"), cwd = join(root, "work");
+  mkdirSync(join(home, ".omp", "agent", "sessions", `-tmp-${root.split("/").pop()}-work`), { recursive: true });
+  mkdirSync(cwd);
+  const f = join(home, ".omp", "agent", "sessions", `-tmp-${root.split("/").pop()}-work`, "2026-11-16T10-00-00-000Z_01a1e34c-06f1-7474-b9e5-4f8996e2dfe6.jsonl");
+  writeFileSync(f, "\n");
+  const p = Bun.spawn(["sleep", "10"], { cwd, env: { ...process.env, HOME: home }, stdout: "ignore", stderr: "ignore" });
+  try {
+    await Bun.sleep(150);
+    const r = Bun.spawn(["sh", "-c", FIND, "find", "omp", String(p.pid)], { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "ignore" });
+    const out = await new Response(r.stdout).text();
+    expect(out.trim()).toBe(f);
+  } finally {
+    p.kill();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

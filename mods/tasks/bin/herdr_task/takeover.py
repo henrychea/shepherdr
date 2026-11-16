@@ -24,15 +24,19 @@ CHECK = r"""
 limit=; if command -v timeout >/dev/null 2>&1; then limit='timeout 10'; fi
 if command -v claude >/dev/null 2>&1; then echo "claude=$($limit claude auth status </dev/null 2>/dev/null | grep -o '"loggedIn": *[a-z]*' | head -n 1)"; else echo claude=missing; fi
 if command -v codex >/dev/null 2>&1; then echo "codex=$($limit codex login status </dev/null 2>&1 | grep -iE '^(not )?logged in' | head -n 1)"; else echo codex=missing; fi
+if command -v omp >/dev/null 2>&1; then echo omp=installed; else echo omp=missing; fi
 """
 # In the login shell agents start in, so its PATH has what mise, nvm or a profile put there.
 LOGIN = 'if command -v bash >/dev/null 2>&1; then exec bash -lc "$1"; else exec sh -lc "$1"; fi'
-NAMES = {"claude": "Claude Code", "codex": "Codex"}
+NAMES = {"claude": "Claude Code", "codex": "Codex", "omp": "OMP"}
 
 
 def cli_state(word):
     if word == "missing":
         return "missing"
+    if word == "installed":
+        # OMP has no sign-in status command: installed is all we know, never "signed out".
+        return None
     if re.search(r'"loggedIn": *true|^logged in', word or "", re.I):
         return "ready"
     if re.search(r'"loggedIn": *false|^not logged in', word or "", re.I):
@@ -41,13 +45,14 @@ def cli_state(word):
 
 
 def check_machine(machine=None):
-    """{claude, codex: "ready" | "signed-out" | "missing" | None, at}, or None when it couldn't run."""
+    """{claude, codex, omp: "ready" | "signed-out" | "missing" | None, at}, or None when it couldn't run."""
     on = ["--on", machine] if machine else []
     r = run(["hc", "exec", *on, "--timeout", "30", "--", "sh", "-c", LOGIN, "x", CHECK])
     words = dict(ln.split("=", 1) for ln in r.stdout.split("\n") if "=" in ln)
     if r.returncode != 0 or not words:
         return None
-    return {"claude": cli_state(words.get("claude", "").strip()), "codex": cli_state(words.get("codex", "").strip()), "at": now()}
+    return {"claude": cli_state(words.get("claude", "").strip()), "codex": cli_state(words.get("codex", "").strip()),
+            "omp": cli_state(words.get("omp", "").strip()), "at": now()}
 
 
 def read_checks():
@@ -86,7 +91,7 @@ def cli_check_pass(report=None, force=False):
             machines[name]["failed"] = now()
     write_checks(d)
     if report is not None:
-        report["cli_check"] = {n: {k: v for k, v in machines[n].items() if k in ("claude", "codex")} for n in names if n in machines}
+        report["cli_check"] = {n: {k: v for k, v in machines[n].items() if k in ("claude", "codex", "omp")} for n in names if n in machines}
     return d
 
 
@@ -134,7 +139,7 @@ def backup_for(s, t, running):
         return want, None
     if want == running:
         return None, "no backup"
-    other = {"claude": "codex", "codex": "claude"}.get(running)
+    other = {"claude": "codex", "codex": "claude", "omp": "claude"}.get(running)
     if other and here_state(other) == "ready":
         return other, None
     return None, "no backup"

@@ -44,11 +44,16 @@ CLAUDE_VALUE = {"--add-dir", "--mcp-config", "--append-system-prompt", "--system
                 "--model", "--effort", "--settings", "--permission-mode"}
 CODEX_VALUE = {"-c", "--config", "-m", "--model", "-p", "--profile", "-s", "--sandbox", "-a", "--ask-for-approval",
                "-C", "--cd", "--add-dir", "-i", "--image", "--enable", "--disable", "--local-provider", "--oss"}
+OMP_VALUE = {"--smol", "--slow", "--plan", "--prewalk-into", "--plan-yolo-into", "--provider", "--api-key",
+             "--system-prompt", "--system-prompt-template", "--append-system-prompt", "--profile", "--alias", "--cwd",
+             "--mode", "--config", "--add-dir", "--session-dir", "--models", "--tools", "--service-tier", "--hook",
+             "--extension", "-e", "--skills", "--export", "--spinner-interval", "--max-fps", "--motion", "--max-time",
+             "--warn-cost", "--max-cost", "--model", "--thinking", "--approval-mode"}
 
 
 def kind_of(word):
     b = os.path.basename(str(word))
-    return b if b in ("claude", "codex") else None
+    return b if b in ("claude", "codex", "omp") else None
 
 
 def base_argv(argv):
@@ -70,6 +75,17 @@ def base_argv(argv):
                 i += 1
                 continue
             if a in CLAUDE_VALUE and i + 1 < len(rest):
+                out += [a, rest[i + 1]]
+                i += 2
+                continue
+        elif kind == "omp":
+            if a in ("--resume", "-r", "--session", "--fork", "--restore"):
+                i += 2 if i + 1 < len(rest) and not rest[i + 1].startswith("-") else 1
+                continue
+            if a.startswith(("--resume=", "--session=", "--fork=", "--restore=")) or a in ("--continue", "-c"):
+                i += 1
+                continue
+            if a in OMP_VALUE and i + 1 < len(rest):
                 out += [a, rest[i + 1]]
                 i += 2
                 continue
@@ -95,6 +111,8 @@ def resume_argv(kind, argv, session, message=None):
     """argv (base_argv's) resuming `session`, with a first message when given."""
     tail = [message] if message else []
     if kind == "claude":
+        return [*argv, "--resume", session, *tail]
+    if kind == "omp":
         return [*argv, "--resume", session, *tail]
     return [argv[0], "resume", *argv[1:], session, *tail]
 

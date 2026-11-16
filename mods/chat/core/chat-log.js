@@ -24,12 +24,59 @@ for p in "$pid" $(kids "$pid"); do
     for f in "$HOME"/.claude/projects/*/"$id".jsonl; do [ -f "$f" ] && { echo "$f"; exit 0; }; done
     echo "pending"; exit 0
   else
-    if [ -d "/proc/$p/fd" ]; then
-      f=$(for d in /proc/$p/fd/*; do readlink "$d"; done 2>/dev/null | grep '/rollout-.*\\.jsonl$' | head -1)
+    if [ "$kind" = omp ]; then
+      # OMP writes <agent dir>/terminal-sessions/<terminal-id>: its cwd, then its session file. The
+      # terminal id comes from its tty (/dev/pts/3 -> pts-3) or the terminal it runs in (tmux-…).
+      if [ -r "/proc/$p/environ" ]; then
+        env_at() { tr '\\0' '\\n' < "/proc/$p/environ" 2>/dev/null | sed -n "s/^$1=//p" | head -1; }
+      else
+        env_at() { true; }
+      fi
+      a=$(env_at PI_CODING_AGENT_DIR)
+      if [ -z "$a" ]; then c=$(env_at PI_CONFIG_DIR); [ -n "$c" ] && a="$c/agent"; fi
+      [ -n "$a" ] || a="$HOME/.omp/agent"
+      t=$(readlink "/proc/$p/fd/0" 2>/dev/null)
+      [ -n "$t" ] || t=$(ps -o tty= -p "$p" 2>/dev/null | tr -d ' ')
+      ids=""
+      if [ -n "$t" ]; then
+        b=\${t#/dev/}; [ "$b" = "$t" ] && b=$t
+        ids="$(printf '%s' "$b" | tr '/' '-')"
+      fi
+      for v in TMUX_PANE:tmux KITTY_WINDOW_ID:kitty WEZTERM_PANE:wezterm ZELLIJ_PANE_ID:zellij TERM_SESSION_ID:apple WT_SESSION:wt; do
+        k=\${v%%:*}; pre=\${v#*:}; vv=$(env_at "$k")
+        [ -n "$vv" ] && ids="$ids $pre-$vv"
+      done
+      for id in $ids; do
+        r="$a/terminal-sessions/$id"
+        [ -f "$r" ] || continue
+        s=$(sed -n '2p' "$r")
+        [ -n "$s" ] && { echo "$s"; exit 0; }
+      done
+      # Its cwd's session folder: OMP's own encoding (home-relative, -tmp-…, else --abs--).
+      cwd=$(readlink "/proc/$p/cwd" 2>/dev/null)
+      if [ -z "$cwd" ] && command -v lsof >/dev/null 2>&1; then
+        cwd=$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+      fi
+      [ -n "$cwd" ] || continue
+      case "$cwd" in
+        "$HOME") enc="-" ;;
+        "$HOME"/*) enc="-$(printf '%s' "\${cwd#"$HOME"/}" | tr '/' '-')" ;;
+        /tmp) enc="-tmp" ;;
+        /tmp/*) enc="-tmp-$(printf '%s' "\${cwd#/tmp/}" | tr '/' '-')" ;;
+        /var/tmp) enc="-var-tmp" ;;
+        /var/tmp/*) enc="-var-tmp-$(printf '%s' "\${cwd#/var/tmp/}" | tr '/' '-')" ;;
+        *) enc="--$(printf '%s' "\${cwd#/}" | tr '/' '-')--" ;;
+      esac
+      f=$(ls -t "$a/sessions/$enc"/*.jsonl 2>/dev/null | head -1)
+      [ -n "$f" ] && { echo "$f"; exit 0; }
     else
-      f=$(lsof -p "$p" -Fn 2>/dev/null | sed -n 's/^n//p' | grep '/rollout-.*\\.jsonl$' | head -1)
+      if [ -d "/proc/$p/fd" ]; then
+        f=$(for d in /proc/$p/fd/*; do readlink "$d"; done 2>/dev/null | grep '/rollout-.*\\.jsonl$' | head -1)
+      else
+        f=$(lsof -p "$p" -Fn 2>/dev/null | sed -n 's/^n//p' | grep '/rollout-.*\\.jsonl$' | head -1)
+      fi
+      [ -n "$f" ] && { echo "$f"; exit 0; }
     fi
-    [ -n "$f" ] && { echo "$f"; exit 0; }
   fi
 done
 true`;
@@ -58,6 +105,11 @@ BEGIN { pos = base; first = base; msgs = 0 }
   head = substr(line, 1, 400)
   claude = index(head, "\"isSidechain\":false") && index(line, "\"type\":\"user\",\"message\"")
   codex = index(head, "\"type\":\"response_item\"")
+  # OMP writes every entry as {"type":"…"} first; its messages carry role (the nested Claude message.type is
+  # not the first key, so the two never mix). A title slot line is not kept.
+  omp = index(line, "{\"type\":\"message\"") == 1
+  ompmeta = index(line, "{\"type\":\"compaction\"") == 1 || index(line, "{\"type\":\"branch_summary\"") == 1 \
+    || index(line, "{\"type\":\"model_change\"") == 1 || index(line, "{\"type\":\"thinking_level_change\"") == 1
   # A background job (a shell, a watcher, a helper) that ended: Claude Code notes it the moment it
   # ends, as a message queued for the agent (which may read it much later).
   if (index(head, "\"type\":\"queue-operation\",\"operation\":\"enqueue\"") && index(line, "<task-notification>") && index(line, "<status>")) {
@@ -69,6 +121,15 @@ BEGIN { pos = base; first = base; msgs = 0 }
     print off "\tN\t" u " " k " " st
     # and as a place in the queue below
     if (length(line) <= 262144) print off "\tJ\t" line
+    next
+  }
+  # OMP tool results: the call id only (its output stays in the file), and a question answer whole, as Claude Code writes them.
+  if (omp && index(head, "\"role\":\"toolResult\"")) {
+    if (count) next
+    ids = ""
+    if (match(line, /"toolCallId":"[^"]*"/)) { m = substr(line, RSTART, RLENGTH); sub(/^"toolCallId":"/, "", m); sub(/"$/, "", m); ids = m }
+    print off "\tR\t" ids
+    if (index(line, "\"toolName\":\"ask\"") && length(line) <= 262144) print off "\tJ\t" line
     next
   }
   if ((claude && index(line, "\"tool_result\"")) || (codex && (index(head, "\"function_call_output\"") || index(head, "\"custom_tool_call_output\"")))) {
@@ -93,7 +154,11 @@ BEGIN { pos = base; first = base; msgs = 0 }
     next
   }
   keep = 0
-  if (index(head, "\"isSidechain\":false")) {
+  if (omp) {
+    if (index(head, "\"role\":\"user\"") || index(head, "\"role\":\"assistant\"")) keep = 1
+  } else if (ompmeta) {
+    keep = 1
+  } else if (index(head, "\"isSidechain\":false")) {
     if (index(line, "\"type\":\"user\",\"message\"") || index(line, "\"type\":\"assistant\",\"uuid\"") || (index(line, "\"type\":\"attachment\",\"uuid\"") && index(line, "\"queued_command\""))) keep = 1
     # what a /fast run in place said (SHEP-181: the chat shows it runs on Fast at once)
     if (index(head, "\"subtype\":\"local_command\"") && index(line, "local-command-stdout")) keep = 1
@@ -109,12 +174,12 @@ BEGIN { pos = base; first = base; msgs = 0 }
   if (count) next
   gsub(/"data":"[^"]*"/, "\"data\":\"\"", line)
   gsub(/"image_url":"data:[^"]*"/, "\"image_url\":\"\"", line)
-  big = (index(line, "\"tool_use\"") || index(head, "_call\"")) ? 32768 : 262144
+  big = (index(line, "\"tool_use\"") || index(head, "_call\"") || index(line, "\"toolCall\"")) ? 32768 : 262144
   if (length(line) > big) {
     nm = ""
     if (match(line, /"name":"[^"]*"/)) nm = substr(line, RSTART + 8, RLENGTH - 9)
     # A call too big to send: its name and its small fields (what the working line says).
-    n = split("file_path notebook_path description command pattern url query path activeForm", ks, " ")
+    n = split("file_path notebook_path path description command pattern query url activeForm i glob", ks, " ")
     for (k = 1; k <= n; k++) if (match(line, "\"" ks[k] "\":\"[^\"]*")) nm = nm "\037" ks[k] "=" substr(line, RSTART + length(ks[k]) + 4, (RLENGTH - length(ks[k]) - 4 > 200) ? 200 : RLENGTH - length(ks[k]) - 4)
     print off "\tT\t" nm
     next
@@ -570,6 +635,67 @@ function codexStep(name, args) {
   return { kind: "tool", line: `Used ${name}`, doing: `Using ${name}` };
 }
 
+// OMP's own tools (bash, read, edit, write, grep, glob, find, web_search, task, todo, eval…), one call in words.
+function ompStep(name, input = {}) {
+  const a = input ?? {};
+  const intent = typeof a.i === "string" ? a.i : null;
+  switch (name) {
+    case "read": return { kind: "read", line: `Read ${short(a.path ?? a.file_path)}`, doing: `Reading ${base(a.path ?? a.file_path)}` };
+    case "edit": case "ast_edit": {
+      const p = a.path ?? a.file_path ?? a.file;
+      return { kind: "edit", line: `Edited ${short(p)}`, doing: `Editing ${base(p)}` };
+    }
+    case "write": return { kind: "edit", line: `Wrote ${short(a.path ?? a.file_path)}`, doing: `Writing ${base(a.path ?? a.file_path)}` };
+    case "bash": {
+      const command = Array.isArray(a.command) ? a.command.join(" ") : String(a.command ?? a.cmd ?? "");
+      const line = intent ? `${intent}: ${clip(command, 80)}` : `Ran ${clip(command, 80)}`;
+      const shell = { kind: "shell", label: intent || cmdWords(command), cmd: command };
+      if (a.run_in_background || a.background) return { kind: "run", line, doing: `Started ${shell.label}`, bg: shell, shell };
+      const wait = waitWords(command, intent);
+      return { kind: "run", line, doing: wait ?? (intent || `Running ${cmdWords(command)}`), waiting: Boolean(wait), shell };
+    }
+    case "eval": {
+      const text = String(a.code ?? a.input ?? a.script ?? "");
+      return { kind: "run", line: intent ? `Ran a script: ${clip(intent, 70)}` : "Ran a script", doing: intent || "Running a script" };
+    }
+    case "grep": return { kind: "search", line: `Searched for “${clip(a.pattern, 50)}”`, doing: `Searching for “${clip(a.pattern, 40)}”` };
+    case "glob": case "globs": return { kind: "search", line: `Looked for ${clip(a.pattern ?? a.glob, 60)}`, doing: `Looking for ${clip(a.pattern ?? a.glob, 40)}` };
+    case "find": return { kind: "search", line: `Looked for ${clip(a.query ?? a.description, 60)}`, doing: `Looking for ${clip(a.query ?? a.description, 40)}` };
+    case "web_search": return { kind: "web", line: `Searched the web for “${clip(a.query, 60)}”`, doing: `Searching the web for “${clip(a.query, 40)}”` };
+    case "fetch": case "web_fetch": return { kind: "web", line: `Opened ${clip(a.url, 80)}`, doing: `Reading ${host(a.url)}` };
+    case "inspect_image": return { kind: "read", line: `Looked at ${short(a.path ?? a.file_path)}`, doing: `Looking at ${base(a.path ?? a.file_path)}` };
+    case "task": case "vibe_spawn": {
+      const what = clip(a.description ?? a.prompt ?? a.task ?? "", 70);
+      return { kind: "agent", line: `Asked a helper: ${what}`, doing: what ? `Waiting for helper: ${clip(what, 50)}` : "Waiting for a helper", waiting: true };
+    }
+    case "wait": case "vibe_wait": return { kind: "agent", line: "Waited for helpers", doing: "Waiting for helpers", waiting: true };
+    case "todo": {
+      const todos = Array.isArray(a.todos) ? a.todos : [];
+      const now = todos.find((x) => x?.status === "in_progress");
+      return { kind: "plan", line: "Updated its plan", doing: clip(now?.activeForm || now?.content, 60) || "Planning" };
+    }
+    case "ask": return null;
+  }
+  const mcp = /^(?:mcp__|xd:\/\/mcp__)([^_]+(?:_[^_]+)*)__(.+)$/.exec(name);
+  if (mcp) return { kind: "tool", line: `Used ${mcp[1]}: ${mcp[2]}`, doing: `${mcp[2].replace(/[_-]+/g, " ")} (${mcp[1]})` };
+  return { kind: "tool", line: `Used ${name}`, doing: intent ? clip(intent, 60) : `Using ${name}` };
+}
+
+// The shell commands an OMP call runs (sendsOf reads them), else "".
+function ompCommand(name, args) {
+  if (name !== "bash" || !args || typeof args !== "object") return "";
+  const c = args.command ?? args.cmd ?? "";
+  return Array.isArray(c) ? c.join(" ") : String(c);
+}
+
+// OMP's ask tool: the questions it put to the person, as Claude's AskUserQuestion shows them, and its answer.
+function ompQuestions(args) {
+  const qs = Array.isArray(args?.questions) ? args.questions : Array.isArray(args?.question) ? [args] : [];
+  return qs.map((q) => [q?.question ?? q?.prompt, ...(Array.isArray(q?.options) ? q.options.map((o) => `- ${o?.label ?? o}`) : [])]
+    .filter(Boolean).join("\n")).filter(Boolean).join("\n\n");
+}
+
+
 // The conversation in one log, built from LOG's records ({ off, kind, data }) in file order.
 // Items (ids come from byte offsets, so they stay the same when earlier pages are added):
 //   { kind: "user", id, text, from?, at, images, paths? }   { kind: "agent", id, text, at, suggest? }
@@ -585,6 +711,7 @@ function codexStep(name, args) {
 //                                             out: where the call's result line is)
 //   { kind: "ask", id, text, questions?, closed? }  (the agent's own question tool, Codex's with its questions; closed once its dialog
 //                                          is gone: "answered" | "dismissed")   { kind: "error", id, text }
+//   { kind: "compact", id, at, text }  (a compaction's summary: OMP archives the session and carries on)
 // `doing` is what it does right now (the last call not answered yet), for the status line.
 // `meta` is what the agent runs on, from its newest lines: { model, effort, speed, used, window }
 // (used: tokens in its context window now; window: that window's size when the log says it;
@@ -880,12 +1007,12 @@ export class Conversation {
         // A call too big to send whole: its name and small fields ("file_path=…").
         const [name, ...fields] = r.data.split("\x1f");
         const input = Object.fromEntries(fields.map((f) => { const i = f.indexOf("="); let v = f.slice(i + 1); try { v = JSON.parse(`"${v.replace(/\\$/, "")}"`); } catch {} return [f.slice(0, i), v]; }));
-        if (name) this.step(`big${r.off}`, r.off, claudeStep(name, input) ?? { kind: "tool", line: `Used ${name}`, doing: "Working" });
+        if (name) this.step(`big${r.off}`, r.off, (this.kind === "omp" ? ompStep(name, input) : claudeStep(name, input)) ?? { kind: "tool", line: `Used ${name}`, doing: "Working" });
         continue;
       }
       const l = parse(r.data);
       if (!l || typeof l !== "object") continue;
-      if (this.kind === "codex") this.codex(l, r.off); else this.claude(l, r.off);
+      if (this.kind === "codex") this.codex(l, r.off); else if (this.kind === "omp") this.omp(l, r.off); else this.claude(l, r.off);
     }
   }
 
@@ -1041,6 +1168,72 @@ export class Conversation {
       this.doing = null;
     }
   }
+
+  omp(l, off) {
+    const at = time(l.timestamp);
+    if (l.type === "model_change") {
+      this.meta = { ...this.meta, model: l.model ?? this.meta.model, at: at || this.meta.at };
+      return;
+    }
+    if (l.type === "thinking_level_change") {
+      this.meta = { ...this.meta, effort: l.thinkingLevel ?? l.configured ?? this.meta.effort, at: at || this.meta.at };
+      return;
+    }
+    if (l.type === "compaction" || l.type === "branch_summary") {
+      // OMP archives the conversation and carries on on a summary; the chat says so where it happened.
+      const text = String(l.summary ?? "").trim();
+      if (text) this.push({ kind: "compact", id: `k${off}`, at, text });
+      return;
+    }
+    if (l.type !== "message") return;
+    const m = l.message ?? {};
+    if (m.role === "user") {
+      const c = Array.isArray(m.content) ? m.content : [];
+      const images = c.filter((b) => b?.type === "image").length;
+      const words = c.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n\n");
+      if (!words && !images) return;
+      const u = cleanUser(images ? words.replace(/\[Image #\d+\]\s*/g, "") : words);
+      if (u || images) this.user(`u${off}`, { ...(u ?? { text: "" }), at, images });
+      return;
+    }
+    if (m.role === "assistant") {
+      for (const b of Array.isArray(m.content) ? m.content : []) {
+        if (b?.type === "text") {
+          const said = this.agentText(b.text ?? "");
+          if (said) this.push({ kind: "agent", id: `a${off}`, text: said, at, ...this.takeSuggest() });
+        } else if (b?.type === "toolCall") {
+          const id = String(b.id ?? `c${off}`);
+          const name = String(b.name ?? "");
+          const args = b.arguments ?? {};
+          // Its own question tool: shown as Claude Code's AskUserQuestion is; its answer comes as a tool result.
+          if (name === "ask") {
+            const text = ompQuestions(args);
+            if (text) this.asked(id, { kind: "ask", id: `q${off}`, text });
+            this.open.set(id, "Asking you something");
+            this.doing = "Asking you something";
+            continue;
+          }
+          const st = ompStep(name, args);
+          if (st) st.at = at || Date.now();
+          if (name === "bash" && ARTIFACT.test(String(args.command ?? ""))) this.push({ kind: "artifact", id: `art${off}`, at });
+          this.step(id, off, st, name === "task" || name === "vibe_spawn" ? id : null);
+          this.sent(ompCommand(name, args), off, at);
+        }
+      }
+      return;
+    }
+    if (m.role === "toolResult" && m.toolName === "ask") {
+      // The person's answers to its question, as their own message right after it (as Claude Code's answers()).
+      const q = this.questions.get(String(m.toolCallId ?? ""));
+      if (q) q.closed = "answered";
+      const text = (Array.isArray(m.content) ? m.content : []).filter((x) => x?.type === "text").map((x) => x.text ?? "").join("\n").trim();
+      const answers = /^User answers:\s*\n?([\s\S]*)$/.exec(text)?.[1]?.trim();
+      if (answers) {
+        this.waiting = false;
+        this.push({ kind: "user", id: `ua${off}`, text: answers, at, answer: true });
+      }
+    }
+  }
 }
 
 // Turns LOG's output into its header line and records.
@@ -1065,7 +1258,11 @@ export function resultText(line, id) {
   const l = parse(line);
   if (l) {
     const c = l.message?.content;
-    if (Array.isArray(c)) {
+    if (l.message?.role === "toolResult") {
+      // OMP: a tool result's text blocks (images say so; their data stays in the file).
+      text = Array.isArray(c) ? c.map((x) => (x?.type === "text" ? x.text : x?.type === "image" ? "[image]" : "")).filter(Boolean).join("\n") : null;
+    }
+    if (text === null && Array.isArray(c)) {
       const b = c.find((x) => x?.type === "tool_result" && x.tool_use_id === id) ?? c.find((x) => x?.type === "tool_result");
       const v = b?.content;
       text = typeof v === "string" ? v : Array.isArray(v) ? v.map((x) => x?.text ?? "").join("\n") : null;

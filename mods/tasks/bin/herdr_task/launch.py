@@ -234,7 +234,10 @@ def own_command(path, text, sandboxed=False):
 REVIEWERS = {"codex": (["codex", "--no-daemon", "--sandbox", "read-only", "--ask-for-approval", "never"],
                        {"--disable": re.compile(r"hooks"), "-m": re.compile(r"[\w.:-]+"),
                         "-c": re.compile(r'projects=\{.*\}|model_reasoning_effort="?\w+"?', re.S)}),
-             "claude": (["claude", "--permission-mode", "plan"], {"--model": re.compile(r"[\w.:\[\]-]+"), "--effort": re.compile(r"\w+")})}
+             "claude": (["claude", "--permission-mode", "plan"], {"--model": re.compile(r"[\w.:\[\]-]+"), "--effort": re.compile(r"\w+")}),
+             # OMP has no sandbox: its read tools only (settings.reviewer_command builds the same line).
+             "omp": (["omp", "--tools", "read,grep,glob,find,web_search"],
+                     {"--model": re.compile(r"[\w.@/:\-]+"), "--thinking": re.compile(r"\w+")})}
 HELPER = re.compile(r"[\w.-]+-(?:review|helper)(?:-[\w.-]+)?")
 
 
@@ -252,7 +255,7 @@ def helper_hc(words):
             j += 1
         elif opts[j] == "--name" and j + 1 < len(opts) and HELPER.fullmatch(opts[j + 1]):
             j += 2
-        elif opts[j] == "--label" and j + 1 < len(opts) and re.fullmatch(r"herdr\.(?:task=[\w#.@-]+|role=(?:reviewer|helper)|agent=(?:codex|claude))", opts[j + 1]):
+        elif opts[j] == "--label" and j + 1 < len(opts) and re.fullmatch(r"herdr\.(?:task=[\w#.@-]+|role=(?:reviewer|helper)|agent=(?:codex|claude|omp))", opts[j + 1]):
             j += 2
         else:
             return False
@@ -371,6 +374,8 @@ def resume_argv(argv, session, folder=None):
         return argv + ([] if has else ["--permission-mode", mode]) + ["--resume", session]
     if k == "codex":
         return [argv[0], "resume"] + argv[1:] + [session]
+    if k == "omp":
+        return argv + ["--resume", session]
     return None
 
 

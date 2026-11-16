@@ -83,7 +83,7 @@ export const USE_OTHER_CLI = "Use other CLI";
 export const LOADING_AGENTS = "Loading agents…";
 // An unset Reviewer's button: what runs, the other CLI.
 export const otherCliWords = (cli) => `Other CLI (${NAMES[cli] ?? cli})`;
-export const otherCli = (worker) => (worker === "codex" ? "claude" : "codex");
+export const otherCli = (worker) => (worker === "codex" ? "claude" : worker === "omp" ? "claude" : "codex");
 // Reactions (herdr-task's reactions.py): every agent (Assistants, task workers, automation runs, agent tabs) reacts to
 // some of your messages with an emoji; off, none does. Kept as agents.reactions; SHEP-42 kept it as assistant.reactions
 // (upgradeReactions moves it).
@@ -144,8 +144,11 @@ export function modelLabel(menus, sel) {
 // What the agents offer, from each CLI's own settings (agents.js parseDefaults) and which are installed:
 // { menus, permDefault, defaults } (defaults: the first installed CLI's own, what an unset role runs).
 export function choicesFrom(dflts, installed = { claude: true, codex: true }) {
-  const menus = Object.fromEntries(["claude", "codex"].filter((k) => installed[k]).map((k) => [k, menuFor(k, dflts[k])]));
-  const permDefault = { claude: dflts.claude?.mode ?? "manual", codex: "auto" };
+  // OMP is offered only when the caller says it is installed (or read its settings): an older call site that
+  // knows two CLIs never grows a third silently.
+  const have = (k) => installed[k] ?? (k === "omp" ? Boolean(dflts?.omp) : true);
+  const menus = Object.fromEntries(["claude", "codex", "omp"].filter(have).map((k) => [k, menuFor(k, dflts[k])]));
+  const permDefault = { claude: dflts.claude?.mode ?? "manual", codex: "auto", omp: dflts.omp?.mode ?? "yolo" };
   const first = menus.claude ? "claude" : Object.keys(menus)[0] ?? "claude";
   const c = current(first, [], {}, dflts[first]);
   const model = rowFor(first, c) ?? menus[first]?.models?.[0]?.id ?? null;

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### OMP
+
+- Shepherdr supports OMP (oh-my-pi) as a third agent CLI beside Claude Code and Codex. A chat follows an OMP agent's
+  own session log in its terminal and on the web: your messages and its replies, its tool calls and results, model and
+  thinking-level changes, compactions, and the questions it asked with their answers. Settings offers OMP for the
+  Assistant and for tasks' workers and reviewers, and `herdr-task add/start --agent omp` starts one with `--model`,
+  `--thinking` and `--approval-mode`. Restarts, resumes, switches and backups build OMP's own argv; the model menu
+  shows OMP's current model, thinking level and the models it lists.
+- OMP has no permission hook and no fork or rewind command: its questions and approvals stay in its terminal (no chat
+  cards), and its chat offers no Fork or Rewind. [Install](docs/install.md) says so.
+
 ## 3.1.35
 
 The 15 November fixes from GitHub: Shepherdr no longer tries SSH to machines you never linked, tasks stop getting stuck

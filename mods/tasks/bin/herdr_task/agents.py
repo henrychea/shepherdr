@@ -401,6 +401,8 @@ def said(d):
     msg = d.get("message") if d.get("type") == "assistant" and not d.get("isSidechain") and not d.get("isApiErrorMessage") else None
     if d.get("type") == "response_item" and (d.get("payload") or {}).get("role") == "assistant":
         msg = d["payload"]
+    if d.get("type") == "message" and (d.get("message") or {}).get("role") == "assistant":
+        msg = d["message"]
     if msg is None:
         return None
     parts = [c.get("text") for c in msg.get("content") or [] if isinstance(c, dict) and c.get("type") in ("text", "output_text")]
@@ -417,6 +419,13 @@ def from_person(d):
             return "\n".join(x.get("text") or "" for x in c if isinstance(x, dict) and x.get("type") == "text")
     if d.get("type") == "event_msg" and (d.get("payload") or {}).get("type") == "user_message":
         return str(d["payload"].get("message") or "")
+    if d.get("type") == "message" and (d.get("message") or {}).get("role") == "user":
+        c = d["message"].get("content")
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):
+            words = "\n".join(str(x.get("text") or "") for x in c if isinstance(x, dict) and x.get("type") == "text")
+            return words or None
     return None
 
 
@@ -648,6 +657,9 @@ BG_LOG_BYTES = 64 * 1048576  # a first look at a log reads at most this much of 
 # (a foreground command times out at 10 minutes) no longer counts as running.
 TOOL_USE = re.compile(r'"type":\s*"tool_use",\s*"id":\s*"([^"]+)",\s*"name":\s*"([^"]+)"')
 TOOL_DONE = re.compile(r'"tool_use_id":\s*"([^"]+)"')
+# OMP: a call in an assistant message, its result in a toolResult message (the same log, its own shapes).
+OMP_TOOL_USE = re.compile(r'"type":\s*"toolCall",\s*"id":\s*"([^"]+)",\s*"name":\s*"([^"]+)"')
+OMP_TOOL_DONE = re.compile(r'"role":\s*"toolResult".*?"toolCallId":\s*"([^"]+)"')
 TIMESTAMP = re.compile(r'"timestamp":\s*"([^"]+)"')
 SIDECHAIN = re.compile(r'"isSidechain":\s*true')
 FG_MAX_MS = 15 * 60000
@@ -731,7 +743,7 @@ def open_tool(log):
     calls = c.get("open") or {}
     for i in [i for i, (_, at) in calls.items() if now() - at >= FG_MAX_MS]:
         calls.pop(i)
-    mine = [x for x in calls.values() if x[0] not in ("AskUserQuestion", "ExitPlanMode")]
+    mine = [x for x in calls.values() if x[0] not in ("AskUserQuestion", "ExitPlanMode", "ask")]
     return max(mine, key=lambda x: x[1]) if mine else None
 
 
@@ -752,6 +764,13 @@ def _bg_scan(lines, seen):
                 opened[m.group(1)] = (m.group(2), (_ms(stamp.group(1)) if stamp else None) or now())
         if '"tool_use_id"' in raw:
             for m in TOOL_DONE.finditer(raw):
+                opened.pop(m.group(1), None)
+        if '"toolCall"' in raw:
+            stamp = TIMESTAMP.search(raw)
+            for m in OMP_TOOL_USE.finditer(raw):
+                opened[m.group(1)] = (m.group(2), (_ms(stamp.group(1)) if stamp else None) or now())
+        if '"toolResult"' in raw and '"toolCallId"' in raw:
+            for m in OMP_TOOL_DONE.finditer(raw):
                 opened.pop(m.group(1), None)
         if any(h in raw for h in BG_HINTS):
             try:

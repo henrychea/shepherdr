@@ -21,10 +21,17 @@ export const CODEX = [
   ["mcp", "List MCP tools"], ["resume", "Resume another conversation"], ["fork", "Fork this conversation"],
   ["logout", "Sign out"], ["quit", "Exit Codex"],
 ];
+export const OMP = [
+  ["model", "Choose the model"], ["thinking", "Set the thinking level"], ["plan", "Plan before changing anything"],
+  ["compact", "Summarize the conversation to free context"], ["new", "Start a new conversation"], ["resume", "Resume another conversation"],
+  ["export", "Export the conversation"], ["status", "Show session settings and usage"], ["theme", "Change the theme"],
+  ["login", "Sign in"], ["logout", "Sign out"], ["help", "Show help"], ["quit", "Exit OMP"],
+];
 // Commands that open a menu in the CLI when given no arguments.
 export const MENU = {
   claude: new Set(["agents", "config", "doctor", "effort", "export", "hooks", "login", "mcp", "memory", "model", "permissions", "plugin", "resume", "rewind", "status", "theme", "usage"]),
   codex: new Set(["model", "approvals", "review", "mention", "resume", "fork", "status", "diff"]),
+  omp: new Set(["model", "thinking", "plan", "resume", "status", "theme", "login"]),
 };
 
 // The person's own commands and skills, on the agent's machine: "name<TAB>description" lines.
@@ -46,8 +53,10 @@ export function scanned(stdout) {
 }
 
 // Every command an agent knows, its CLI's first: [{ name, about }]. mine: the person's own (Claude Code only).
+const CLI = (kind) => (kind === "codex" ? CODEX : kind === "omp" ? OMP : CLAUDE);
+
 export function commandList(kind, mine = []) {
-  const list = (kind === "codex" ? CODEX : CLAUDE).map(([name, about]) => ({ name, about }));
+  const list = CLI(kind).map(([name, about]) => ({ name, about }));
   if (kind !== "claude") return list;
   const seen = new Set(list.map((c) => c.name));
   return [...list, ...mine.filter((c) => !seen.has(c.name) && seen.add(c.name))];
@@ -72,6 +81,6 @@ export function opensMenu(kind, text) {
   if (!m) return null;
   if (MENU[kind]?.has(m[1])) return m[1];
   // The CLI completes a prefix to its first match ("/mo" runs /model).
-  const all = (kind === "codex" ? CODEX : CLAUDE).map(([n]) => n).filter((n) => n.startsWith(m[1]));
+  const all = CLI(kind).map(([n]) => n).filter((n) => n.startsWith(m[1]));
   return all.length && MENU[kind]?.has(all[0]) ? all[0] : null;
 }

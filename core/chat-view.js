@@ -127,8 +127,8 @@ export function clock(at, now = new Date()) {
 
 // The actions under a message, in order: reply and copy; then the CLI's rewind on your own (not a /command, not one
 // another agent sent), or its fork on the agent's (when the CLI is known).
-export function bandActs(side, text, { from = null, fork = true } = {}) {
-  if (side === "user") return ["reply", "copy", ...(/^\//.test(String(text ?? "")) || from ? [] : ["rewind"])];
+export function bandActs(side, text, { from = null, fork = true, rewind = true } = {}) {
+  if (side === "user") return ["reply", "copy", ...(rewind && !/^\//.test(String(text ?? "")) && !from ? ["rewind"] : [])];
   return ["reply", "copy", ...(fork ? ["fork"] : [])];
 }
 
@@ -224,7 +224,7 @@ export function sentTo(x, sender = (f) => f) {
 export function selfName({ assistant = false, task = null, kind = null } = {}) {
   if (assistant) return "Assistant";
   if (task) return task;
-  return { claude: "Claude", codex: "Codex" }[kind] ?? "Agent";
+  return { claude: "Claude", codex: "Codex", omp: "OMP" }[kind] ?? "Agent";
 }
 
 // A name's initial for its avatar: a task ref's letters ("SHEP-4" → "S"), else its first letter.
@@ -393,13 +393,13 @@ function parentAddr(k) {
   return m && !p.includes("/") ? `${m}/${p}` : p;
 }
 
-const AGENTS = { codex: "Codex", claude: "Claude Code", "claude-code": "Claude Code", pi: "Pi" };
+const AGENTS = { codex: "Codex", claude: "Claude Code", "claude-code": "Claude Code", pi: "Pi", omp: "OMP", "oh-my-pi": "OMP" };
 // its CLI: its herdr.agent label, else what hc says runs in it, else its command's name
 export function subagentCli(k) {
   const a = k?.labels?.["herdr.agent"] ?? k?.agent ?? null;
   if (a) return String(a).replace(/^claude-code$/, "claude");
   const argv = k?.foreground?.argv ?? k?.argv ?? [];
-  const prog = argv.map((x) => String(x).split("/").pop()).find((x) => /^(claude|codex|pi)$/.test(x));
+  const prog = argv.map((x) => String(x).split("/").pop()).find((x) => /^(claude|codex|pi|omp)$/.test(x));
   return prog ?? null;
 }
 

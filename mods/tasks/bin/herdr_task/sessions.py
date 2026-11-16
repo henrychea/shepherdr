@@ -73,9 +73,94 @@ def kids(pid):
     return out
 
 
+OMP_UUID = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
+
+
+def _proc_env(pid):
+    """A process's environment as a dict, when this system keeps it (/proc): {} elsewhere."""
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            raw = f.read()
+    except OSError:
+        return {}
+    out = {}
+    for part in raw.split(b"\0"):
+        if b"=" not in part:
+            continue
+        k, v = part.split(b"=", 1)
+        out[k.decode("utf-8", "replace")] = v.decode("utf-8", "replace")
+    return out
+
+
+def omp_agent_dir(pid=None):
+    """OMP's agent directory, from the process that runs it: PI_CODING_AGENT_DIR, else PI_CONFIG_DIR/agent,
+    else ~/.omp/agent."""
+    env = _proc_env(pid) if pid else os.environ
+    a = env.get("PI_CODING_AGENT_DIR")
+    if not a and env.get("PI_CONFIG_DIR"):
+        a = os.path.join(env["PI_CONFIG_DIR"], "agent")
+    return a or os.path.join(HOME, ".omp", "agent")
+
+
+def _omp_terminal_ids(pid):
+    """The names OMP may write its breadcrumb under: its tty (pts-3), or the terminal it runs in."""
+    ids = []
+    try:
+        tty = os.readlink(f"/proc/{pid}/fd/0")
+    except OSError:
+        tty = ""
+    if not tty:
+        tty = run(["ps", "-o", "tty=", "-p", str(pid)]).stdout.strip()
+    if tty:
+        ids.append(tty[len("/dev/"):] if tty.startswith("/dev/") else tty)
+    env = _proc_env(pid)
+    for pre, key in (("tmux", "TMUX_PANE"), ("kitty", "KITTY_WINDOW_ID"), ("wezterm", "WEZTERM_PANE"),
+                     ("zellij", "ZELLIJ_PANE_ID"), ("apple", "TERM_SESSION_ID"), ("wt", "WT_SESSION")):
+        if env.get(key):
+            ids.append(f"{pre}-{env[key]}")
+    return [i.replace("/", "-") for i in ids if i]
+
+
+def omp_session_of(pid):
+    """(session id, log path) of OMP running as pid (or a child), as mods/chat/log.js finds it: the session
+    file it holds open, else <agent dir>/terminal-sessions/<terminal id>'s second line."""
+    for p in [str(pid)] + kids(pid):
+        files = []
+        fd = f"/proc/{p}/fd"
+        if os.path.isdir(fd):
+            for n in os.listdir(fd):
+                try:
+                    files.append(os.readlink(os.path.join(fd, n)))
+                except OSError:
+                    pass
+        elif shutil.which("lsof"):
+            files = [l[1:] for l in run(["lsof", "-p", p, "-Fn"]).stdout.split("\n") if l.startswith("n")]
+        for f in files:
+            m = OMP_UUID.search(f)
+            if m and "/sessions/" in f:
+                return m.group(1), f
+        a = omp_agent_dir(p)
+        for tid in _omp_terminal_ids(p):
+            try:
+                with open(os.path.join(a, "terminal-sessions", tid), errors="replace") as f:
+                    lines = f.read().splitlines()
+            except OSError:
+                continue
+            path = lines[1].strip() if len(lines) > 1 else ""
+            if not path:
+                continue
+            m = OMP_UUID.search(path)
+            if os.path.isfile(path):
+                return (m.group(1) if m else None), path
+            # The breadcrumb is written before the session's first turn: its file appears then.
+            continue
+    return None, None
+
+
 def session_of(pid):
     """(session id, log path) of the agent process pid (or a child), as mods/chat/log.js finds it:
-    Claude Code names its session in ~/.claude/sessions/<pid>.json; Codex holds its rollout open."""
+    Claude Code names its session in ~/.claude/sessions/<pid>.json; Codex holds its rollout open; OMP holds
+    its session file open and writes a breadcrumb."""
     for p in [str(pid)] + kids(pid):
         j = os.path.join(HOME, ".claude", "sessions", p + ".json")
         if os.path.isfile(j):
@@ -104,9 +189,15 @@ def session_of(pid):
         elif shutil.which("lsof"):
             files = [l[1:] for l in run(["lsof", "-p", p, "-Fn"]).stdout.split("\n") if l.startswith("n")]
         for f in files:
+            m = OMP_UUID.search(f)
+            if m and "/sessions/" in f:
+                return m.group(1), f
             m = re.search(r"/rollout-.*?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$", f)
             if m:
                 return m.group(1), f
+    sid, log = omp_session_of(pid)
+    if sid:
+        return sid, log
     return None, None
 
 
@@ -173,6 +264,12 @@ def _start(path):
                     w = _words(p.get("content"))
                     if not w.lstrip().startswith("<"):  # not Codex's own <environment_context> or instructions
                         at, said = at or _ms(o.get("timestamp")), w
+                elif o.get("type") == "session":
+                    at = at or _ms(o.get("timestamp"))
+                elif o.get("type") == "message" and (o.get("message") or {}).get("role") == "user":
+                    w = _words((o.get("message") or {}).get("content"))
+                    if w and not w.lstrip().startswith("<"):
+                        at, said = at or _ms(o.get("timestamp")), w
                 if said:
                     break
     except OSError:
@@ -189,6 +286,8 @@ def log_by_session(kind, sid):
     import glob
     if kind == "codex":
         found = glob.glob(os.path.join(HOME, ".codex", "sessions", "*", "*", "*", f"rollout-*{sid}.jsonl"))
+    elif kind == "omp":
+        found = glob.glob(os.path.join(omp_agent_dir(), "sessions", "*", f"*_{sid}.jsonl"))
     else:
         found = glob.glob(os.path.join(HOME, ".claude", "projects", "*", sid + ".jsonl"))
     return found[0] if found else None
@@ -199,7 +298,7 @@ def find_log(a, ref, folders, taken=()):
     or None: by its session when it has one, else the earliest log of its kind that started from
     its launch on (until it ended) and whose first message names its task."""
     import glob
-    kind = "codex" if a.get("agent") == "codex" else "claude"
+    kind = a.get("agent") if a.get("agent") in ("codex", "omp") else "claude"
     if a.get("session"):
         return log_by_session(kind, a["session"])
     at = a.get("at")
@@ -210,6 +309,8 @@ def find_log(a, ref, folders, taken=()):
         import datetime
         days = {datetime.date.fromtimestamp((at + d) / 1000) for d in (-86400000, 0, 86400000)}
         files = [f for day in days for f in glob.glob(os.path.join(HOME, ".codex", "sessions", f"{day:%Y}", f"{day:%m}", f"{day:%d}", "rollout-*.jsonl"))]
+    elif kind == "omp":
+        files = glob.glob(os.path.join(omp_agent_dir(), "sessions", "*", "*.jsonl"))
     else:
         files = [f for d in dict.fromkeys(x for x in folders if x) for f in glob.glob(os.path.join(project_dir(d), "*.jsonl"))]
     named = re.compile(rf"(?<![\w-]){re.escape(ref)}(?![\w-])")

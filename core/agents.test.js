@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { argvFor, current, forkArgv, FORK_LIVE, line, liveTaskAgent, menuFor, modelSections, parseDefaults, parsePicks, pickKey, resumeArgv, rowFor, withPin, withRecent } from "./agents.js";
+import { argvFor, canFork, canRewind, current, forkArgv, FORK_LIVE, freshArgv, line, liveTaskAgent, menuFor, modelSections, parseDefaults, parsePicks, permAcross, pickKey, resumeArgv, rowFor, sessionOf, withPin, withRecent } from "./agents.js";
 
 const codex = { models: Array.from({ length: 250 }, (_, i) => ({ id: `gpt-${i}`, label: `GPT ${i}`, efforts: ["low", "high"] })) };
 const menus = { claude: menuFor("claude", {}), codex: menuFor("codex", codex) };
@@ -127,4 +127,61 @@ test("an ended Codex Assistant resumes with codex resume <session>", () => {
 
 test("an Assistant that was itself resumed resumes the session it ran last, once", () => {
   expect(resumeArgv("claude", ["claude", "--resume", "old-id", "--model", "opus"], "new-id")).toEqual(["claude", "--model", "opus", "--resume", "new-id"]);
+});
+
+// ---- OMP -----------------------------------------------------------------------------------------------------
+const ompDefaults = {
+  model: "openai-codex/gpt-5.6-sol", effort: "high", mode: "write",
+  models: [{ id: "openai-codex/gpt-5.6-sol", label: "GPT-5.6 Sol", efforts: ["low", "medium", "high"], defaultEffort: "high", fast: false },
+    { id: "opencode-go/deepseek-v4.1-flash", label: "deepseek-v4.1-flash", efforts: ["low", "max"], defaultEffort: "high", fast: false }],
+};
+test("OMP starts with --model, --thinking and --approval-mode", () => {
+  expect(argvFor({ agent: "omp", model: "opencode-go/deepseek-v4.1-flash", effort: "max", perm: "yolo" }, { agent: "claude", argv: [] }))
+    .toEqual({ argv: ["omp", "--model", "opencode-go/deepseek-v4.1-flash", "--thinking", "max", "--approval-mode", "yolo"], resume: false,
+      base: ["omp", "--model", "opencode-go/deepseek-v4.1-flash", "--thinking", "max", "--approval-mode", "yolo"] });
+});
+test("an OMP restart keeps its other flags, and resumes its own conversation", () => {
+  const old = { agent: "omp", argv: ["omp", "--cwd", "/work", "--tools", "read,grep", "--model", "old/model", "--thinking", "low", "--resume", "s1"] };
+  const out = argvFor({ agent: "omp", model: "new/model", effort: "high", perm: "write" }, { ...old, session: "01a1e34c-06f1-7474-b9e5-4f8996e2dfe6" });
+  expect(out.argv).toEqual(["omp", "--cwd", "/work", "--tools", "read,grep", "--model", "new/model", "--thinking", "high",
+    "--approval-mode", "write", "--resume", "01a1e34c-06f1-7474-b9e5-4f8996e2dfe6"]);
+  expect(out.resume).toBe(true);
+  expect(out.base).not.toContain("--resume");
+});
+test("an OMP session id comes from <timestamp>_<uuid>.jsonl, and resumes the same way", () => {
+  const p = "~/.omp/agent/sessions/-work/2026-11-16T10-00-00-000Z_01a1e34c-06f1-7474-b9e5-4f8996e2dfe6.jsonl";
+  expect(sessionOf("omp", p)).toBe("01a1e34c-06f1-7474-b9e5-4f8996e2dfe6");
+  expect(resumeArgv("omp", ["omp", "--cwd", "/work", "--resume", "old"], "new")).toEqual(["omp", "--cwd", "/work", "--resume", "new"]);
+  expect(freshArgv("omp", ["omp", "--cwd", "/work", "--resume", "old"])).toEqual(["omp", "--cwd", "/work"]);
+});
+test("OMP has no fork and no rewind, and its menu shows its own models, levels and modes", () => {
+  expect(canFork("omp")).toBe(false);
+  expect(canRewind("omp")).toBe(false);
+  expect(forkArgv("omp", ["omp"], "s1")).toBeNull();
+  const m = menuFor("omp", ompDefaults, "opencode-go/deepseek-v4.1-flash");
+  expect(m.name).toBe("OMP");
+  expect(m.models.map((x) => x.id)).toEqual(["openai-codex/gpt-5.6-sol", "opencode-go/deepseek-v4.1-flash"]);
+  expect(m.models[1].efforts).toEqual(["low", "max"]);
+  expect(m.perms.map((p) => p.id)).toEqual(["always-ask", "always-ask-cached", "write", "yolo"]);
+});
+test("OMP's own settings: a role's provider/model:thinking, its approval mode and its catalog", () => {
+  const d = parseDefaults("omp", [
+    'roles\t{"default":"example/first:max"}',
+    "thinking\thigh",
+    "mode\talways-ask-cached",
+    'models\t{"models":[{"provider":"example","kind":"chat","id":"first","selector":"example/first","name":"First","contextWindow":100000,"thinking":["low","max"]}]}',
+  ].join("\n"));
+  expect(d).toMatchObject({ model: "example/first", effort: "max", mode: "always-ask-cached" });
+  expect(d.models[0]).toMatchObject({ id: "example/first", label: "First", efforts: ["low", "max"], window: 100000 });
+  expect(current("omp", [], { model: "example/first", effort: "max" }, d)).toMatchObject({ agent: "omp", model: "example/first", effort: "max", perm: "always-ask-cached" });
+  expect(current("omp", ["omp", "--model", "other/m", "--thinking", "low", "--approval-mode", "yolo"], {}, d)).toMatchObject({ model: "other/m", effort: "low", perm: "yolo" });
+  expect(current("omp", ["omp", "--auto-approve"], {}, d).perm).toBe("yolo");
+});
+test("permissions carried to and from OMP keep their meaning", () => {
+  expect(permAcross("manual", "omp")).toBe("always-ask");
+  expect(permAcross("acceptEdits", "omp")).toBe("write");
+  expect(permAcross("plan", "omp")).toBe("always-ask");
+  expect(permAcross("bypassPermissions", "omp")).toBe("yolo");
+  expect(permAcross("yolo", "claude")).toBe("bypassPermissions");
+  expect(permAcross("write", "codex")).toBe("auto");
 });

@@ -20,7 +20,7 @@ import { codexChoice } from "../core/asks.js";
 const { SCREEN } = SCc as any;
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-const CLI_NAMES: Record<string, string> = { claude: "Claude Code", codex: "Codex" };
+const CLI_NAMES: Record<string, string> = { claude: "Claude Code", codex: "Codex", omp: "OMP" };
 import * as MNc from "../core/menus.js";
 import * as APc from "../core/autopilot.js";
 const { machineLabel } = MNc as any;
@@ -36,6 +36,11 @@ import * as STcore from "../core/settings.js";
 const STc = STcore as any;
 
 const { ago } = T as any;
+// A compaction summary's first words, one line: the quiet row that says OMP compacted the conversation.
+const compactLine = (text: string) => {
+  const first = String(text).split("\n").map((x) => x.trim()).find(Boolean) ?? "";
+  return first.length > 160 ? `${first.slice(0, 159)}…` : first;
+};
 
 export type Row = any;
 export type Space = any;
@@ -238,7 +243,7 @@ export class Compat {
   /** The model menu and restarts (service/agents.ts), set by main. */
   /** The agent Shepherdr settings choose for a space's Assistant (main.ts: Settings.role), for a start from the web. */
   assistantPick: ((space: string) => any) | null = null;
-  agents: { info(addr: string, reader: any): Promise<unknown>; restart(addr: string, reader: any, pick: any): Promise<string>; choices(machine: string | null): Promise<unknown>; ownDefaults(): Promise<{ claude: unknown; codex: unknown }> } | null = null;
+  agents: { info(addr: string, reader: any): Promise<unknown>; restart(addr: string, reader: any, pick: any): Promise<string>; choices(machine: string | null): Promise<unknown>; ownDefaults(): Promise<{ claude: unknown; codex: unknown; omp: unknown }> } | null = null;
 
   /** Agents' secret asks (service/secrets.ts), set by main. */
   secrets: { asks(): { address: string; name: string; why: string }[] } | null = null;
@@ -607,6 +612,8 @@ export class Compat {
         }
       }
       else if (x.kind === "error" && x.text) messages.push({ id: x.id, who: "agent", text: x.text, at: x.at, error: true });
+      // OMP archived the conversation and carries on: a quiet line where it happened (core/chat-log.js compact)
+      else if (x.kind === "compact" && x.text) messages.push({ id: x.id, who: "agent", at: x.at, ended: `Compacted · ${compactLine(x.text)}` });
       // its own question asked now shows as its card (at the end), in place of its "Asked you" box, as the window's
       else if (x.kind === "ask" && !x.closed && (asking || x === codexCard)) continue;
       else if (x.kind === "ask" && x.text) messages.push({ id: x.id, who: "agent", text: x.text, at: x.at, asked: x.closed === "answered" ? "answered" : x.closed ? "dismissed" : "open" });
@@ -711,6 +718,6 @@ export class Compat {
       : reader.state === "none" || reader.state === "missing" ? ((t && t.state !== "live") || !t ? "ended" : kind ? "none" : "unsupported")
       : !reader.pinned && (!t || t.state !== "live") && !items.length ? "ended" : null;
     const failed = failedOf(addr);
-    return { key, messages, ...(failed.length ? { failed } : {}), ...head, ...under, ...(note ? { note } : {}), ...(notice ? { notice } : {}), ...(agent ? { agent } : {}), ...(jobs.length ? { jobs } : {}), working: st === "working", cli: reader.kind === "codex" ? "codex" : "claude", ...(reader.pinned || (t && t.state !== "live") ? { finished: true } : {}) };
+    return { key, messages, ...(failed.length ? { failed } : {}), ...head, ...under, ...(note ? { note } : {}), ...(notice ? { notice } : {}), ...(agent ? { agent } : {}), ...(jobs.length ? { jobs } : {}), working: st === "working", cli: reader.kind === "codex" || reader.kind === "omp" ? reader.kind : "claude", ...(reader.pinned || (t && t.state !== "live") ? { finished: true } : {}) };
   }
 }
