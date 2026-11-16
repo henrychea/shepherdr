@@ -57,6 +57,13 @@ mock.module("gpui-base", () => fakeGpuiBase({
 }));
 (globalThis as any).localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 
+// emoji-pick.test.ts imports spaces-chat/icon.js, which pulls in this mod's live.js and sections.js while its own empty
+// herdr stand-in is registered. Those modules stay cached with that stand-in; give this file fresh copies for its own.
+const fresh = "?sidebar"; // a query makes Bun evaluate a fresh module, unlike TS's static resolver
+const live = await import(`../mods/spaces-chat/live.js${fresh}`);
+mock.module("../mods/spaces-chat/live.js", () => live);
+const sections = await import(`../mods/spaces-chat/sections.js${fresh}`);
+mock.module("../mods/spaces-chat/sections.js", () => sections);
 const { default: Spaces, pilotKey } = await import("../mods/spaces-chat/main.js");
 const cx: any = new Proxy({ timer: { every: () => {}, after: () => {} } }, { get: (t, k) => (t as any)[k] ?? (() => {}) });
 const sidebar = () => { const s: any = new Spaces(); s.init({}, cx); return s.render(cx); };
