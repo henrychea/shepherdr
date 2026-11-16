@@ -35,6 +35,11 @@ for p in "$pid" $(kids "$pid"); do
       a=$(env_at PI_CODING_AGENT_DIR)
       if [ -z "$a" ]; then c=$(env_at PI_CONFIG_DIR); [ -n "$c" ] && a="$c/agent"; fi
       [ -n "$a" ] || a="$HOME/.omp/agent"
+      # It holds its session file open (write-only): that readlink is the exact path.
+      if [ -d "/proc/$p/fd" ]; then
+        f=$(for d in /proc/$p/fd/*; do readlink "$d"; done 2>/dev/null | grep -E "/sessions/.*_[0-9a-f-]{36}\.jsonl$" | head -1)
+        [ -n "$f" ] && { echo "$f"; exit 0; }
+      fi
       t=$(readlink "/proc/$p/fd/0" 2>/dev/null)
       [ -n "$t" ] || t=$(ps -o tty= -p "$p" 2>/dev/null | tr -d ' ')
       ids=""
@@ -50,7 +55,8 @@ for p in "$pid" $(kids "$pid"); do
         r="$a/terminal-sessions/$id"
         [ -f "$r" ] || continue
         s=$(sed -n '2p' "$r")
-        [ -n "$s" ] && { echo "$s"; exit 0; }
+        # The breadcrumb is written before the first turn: its file appears with it.
+        [ -n "$s" ] && { [ -f "$s" ] && { echo "$s"; exit 0; }; echo pending; exit 0; }
       done
       # Its cwd's session folder: OMP's own encoding (home-relative, -tmp-…, else --abs--).
       cwd=$(readlink "/proc/$p/cwd" 2>/dev/null)
