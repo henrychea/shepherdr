@@ -2797,6 +2797,24 @@ class ReviewAsAHelperAgent(unittest.TestCase):
         with open(os.path.join(ROOT, "templates", "reviewer.md")) as f:
             self.assertIn(templates.REVIEWER_MD.strip(), f.read())
 
+    def test_every_prior_shipped_worker_default_is_recognized(self):
+        """An installed template from any earlier release, unedited, gets today's wording: origin/main's shipped
+        WORKER_MD (with ASK_RULE) and each earlier stage are in OLD_WORKERS. This catches a chain that stops
+        one replacement early, such as the pre-OMP label without the ASK rule."""
+        sys.path.insert(0, BIN)
+        from herdr_task import templates
+        with open(os.path.join(ROOT, "test", "fixtures", "worker-origin-main.md")) as f:
+            origin = f.read().strip()
+        self.assertIn(templates.ASK_RULE.strip(), origin)
+        self.assertNotEqual(templates.WORKER_MD.strip(), origin)  # today's text moved on
+        self.assertEqual(templates.WORKER_MD_BEFORE_ASK_OLD.strip(), origin)
+        known = [x.strip() for x in templates.OLD_WORKERS]
+        for old in (templates.WORKER_MD_BEFORE_FEEDBACK_OLD, templates.WORKER_MD_BEFORE_COMMAND_OLD,
+                    templates.WORKER_MD_BEFORE_SUGGEST_OLD, templates.WORKER_MD_BEFORE_OFTEN_OLD,
+                    templates.WORKER_MD_BEFORE_ASK_OLD):
+            self.assertIn(old.strip(), known)
+        self.assertIn(origin, known)
+
     def test_an_unedited_old_reviewer_gets_todays(self):
         sys.path.insert(0, BIN)
         from unittest import mock
@@ -3541,8 +3559,8 @@ class OmpAgent(unittest.TestCase):
     def test_omp_session_id_from_its_log_name(self):
         sys.path.insert(0, BIN)
         from herdr_task.sessions import OMP_UUID
-        m = OMP_UUID.search("/home/me/.omp/agent/sessions/-work/2026-11-16T10-00-00-000Z_01a1e34c-06f1-7474-b9e5-4f8996e2dfe6.jsonl")
-        self.assertEqual(m.group(1), "01a1e34c-06f1-7474-b9e5-4f8996e2dfe6")
+        m = OMP_UUID.search("/home/me/.omp/agent/sessions/-work/2026-11-16T10-00-00-000Z_01a20000-0000-7000-8000-000000000000.jsonl")
+        self.assertEqual(m.group(1), "01a20000-0000-7000-8000-000000000000")
 
 
 class AcceptCardArtifacts(unittest.TestCase):

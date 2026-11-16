@@ -142,15 +142,15 @@ test("OMP starts with --model, --thinking and --approval-mode", () => {
 });
 test("an OMP restart keeps its other flags, and resumes its own conversation", () => {
   const old = { agent: "omp", argv: ["omp", "--cwd", "/work", "--tools", "read,grep", "--model", "old/model", "--thinking", "low", "--resume", "s1"] };
-  const out = argvFor({ agent: "omp", model: "new/model", effort: "high", perm: "write" }, { ...old, session: "01a1e34c-06f1-7474-b9e5-4f8996e2dfe6" });
+  const out = argvFor({ agent: "omp", model: "new/model", effort: "high", perm: "write" }, { ...old, session: "01a20000-0000-7000-8000-000000000000" });
   expect(out.argv).toEqual(["omp", "--cwd", "/work", "--tools", "read,grep", "--model", "new/model", "--thinking", "high",
-    "--approval-mode", "write", "--resume", "01a1e34c-06f1-7474-b9e5-4f8996e2dfe6"]);
+    "--approval-mode", "write", "--resume", "01a20000-0000-7000-8000-000000000000"]);
   expect(out.resume).toBe(true);
   expect(out.base).not.toContain("--resume");
 });
 test("an OMP session id comes from <timestamp>_<uuid>.jsonl, and resumes the same way", () => {
-  const p = "~/.omp/agent/sessions/-work/2026-11-16T10-00-00-000Z_01a1e34c-06f1-7474-b9e5-4f8996e2dfe6.jsonl";
-  expect(sessionOf("omp", p)).toBe("01a1e34c-06f1-7474-b9e5-4f8996e2dfe6");
+  const p = "~/.omp/agent/sessions/-work/2026-11-16T10-00-00-000Z_01a20000-0000-7000-8000-000000000000.jsonl";
+  expect(sessionOf("omp", p)).toBe("01a20000-0000-7000-8000-000000000000");
   expect(resumeArgv("omp", ["omp", "--cwd", "/work", "--resume", "old"], "new")).toEqual(["omp", "--cwd", "/work", "--resume", "new"]);
   expect(freshArgv("omp", ["omp", "--cwd", "/work", "--resume", "old"])).toEqual(["omp", "--cwd", "/work"]);
 });

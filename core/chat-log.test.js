@@ -289,7 +289,7 @@ test("an empty suggest line counts as none, and a suggest line inside a code blo
 const omp = (id, ts, more) => ({ type: "message", id, parentId: null, timestamp: `2026-11-16T10:00:${String(ts).padStart(2, "0")}.000Z`, ...more });
 async function readOmp(lines, kind = "omp") {
   const dir = mkdtempSync(join(tmpdir(), "chat-log-omp-"));
-  const f = join(dir, "2026-11-16T10-00-00-000Z_01a1e34c-06f1-7474-b9e5-4f8996e2dfe6.jsonl");
+  const f = join(dir, "2026-11-16T10-00-00-000Z_01a20000-0000-7000-8000-000000000000.jsonl");
   const title = JSON.stringify({ type: "title", v: 1, title: "Fixture", source: "auto", updatedAt: "2026-11-16T10:00:00.000Z", pad: "x" });
   const slot = title.padEnd(255, " ");
   expect(Buffer.byteLength(slot)).toBe(255);
@@ -304,7 +304,7 @@ async function readOmp(lines, kind = "omp") {
 
 test("an OMP log: its title slot, words, calls, answers and compaction become the chat's items", async () => {
   const { c, recs, f, dir } = await readOmp([
-    { type: "session", version: 3, id: "01a1e34c-06f1-7474-b9e5-4f8996e2dfe6", timestamp: "2026-11-16T10:00:00.000Z", cwd: "/tmp/fixture" },
+    { type: "session", version: 3, id: "01a20000-0000-7000-8000-000000000000", timestamp: "2026-11-16T10:00:00.000Z", cwd: "/tmp/fixture" },
     { type: "model_change", id: "m1", parentId: null, timestamp: "2026-11-16T10:00:00.500Z", model: "example/go-model" },
     { type: "thinking_level_change", id: "m2", parentId: "m1", timestamp: "2026-11-16T10:00:00.600Z", thinkingLevel: "max", configured: null },
     omp("u1", 1, { message: { role: "user", content: [{ type: "text", text: "Add the parser" }], attribution: "user" } }),
@@ -370,7 +370,7 @@ test("FIND finds an OMP agent's log by its cwd's session folder", async () => {
   const home = join(root, "home"), cwd = join(root, "work");
   mkdirSync(join(home, ".omp", "agent", "sessions", `-tmp-${root.split("/").pop()}-work`), { recursive: true });
   mkdirSync(cwd);
-  const f = join(home, ".omp", "agent", "sessions", `-tmp-${root.split("/").pop()}-work`, "2026-11-16T10-00-00-000Z_01a1e34c-06f1-7474-b9e5-4f8996e2dfe6.jsonl");
+  const f = join(home, ".omp", "agent", "sessions", `-tmp-${root.split("/").pop()}-work`, "2026-11-16T10-00-00-000Z_01a20000-0000-7000-8000-000000000000.jsonl");
   writeFileSync(f, "\n");
   const p = Bun.spawn(["sleep", "10"], { cwd, env: { ...process.env, HOME: home }, stdout: "ignore", stderr: "ignore" });
   try {
