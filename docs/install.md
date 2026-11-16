@@ -41,6 +41,8 @@ What goes where:
 | Role instructions | `~/.config/herdr-core/templates/{assistant,worker,reviewer}.md`; one you edited is kept, the new one goes beside it as `.new` |
 | Helpers on the PATH | links in `~/.local/bin`: `herdr-task`, `herdr-artifact`, `herdr-secret`, `herdr-browser`, `shepherdr` |
 | Question cards | hooks in `~/.claude/settings.json` (SessionStart, PermissionRequest) and `~/.codex/hooks.json` (SessionStart, PermissionRequest); `--no-hooks` leaves them out. Codex asks once to trust a new hook, and needs `hooks = true` in `~/.codex/config.toml` |
+| agent-browser (the task browser) | one already on the PATH when it's 0.41.1 up to 0.41.x, else Shepherdr's own copy in `~/.local/share/shepherdr/agent-browser/<version>/` and Chrome for Testing (`agent-browser install`, into `~/.agent-browser`). See [The task browser's agent-browser](#the-task-browsers-agent-browser) |
+| The guard (`--guard`, opt-in) | `~/.local/bin/herdr-app`: refuses to open a window with another HOME, `HERDR_APP_HOME` or core session (it can overwrite every machine's spaces); subcommands pass through |
 
 OMP is supported as a third agent CLI: its chat reads OMP's own session logs (`~/.omp/agent/sessions`), and
 `herdr-task add/start --agent omp` and Settings › Agents start it with `--model`, `--thinking` and
@@ -50,8 +52,6 @@ requests from an OMP agent stay in its terminal and are not answered on a chat c
 covers Claude Code and Codex. OMP's chat also has no Fork or Rewind: OMP 18 has no flag for either, so Shepherdr
 leaves them out instead of guessing. Reactions reach an agent as tags its role instructions teach; OMP's own
 instructions don't, so an OMP agent won't react.
-| agent-browser (the task browser) | one already on the PATH when it's 0.41.1 up to 0.41.x, else Shepherdr's own copy in `~/.local/share/shepherdr/agent-browser/<version>/` and Chrome for Testing (`agent-browser install`, into `~/.agent-browser`). See [The task browser's agent-browser](#the-task-browsers-agent-browser) |
-| The guard (`--guard`, opt-in) | `~/.local/bin/herdr-app`: refuses to open a window with another HOME, `HERDR_APP_HOME` or core session (it can overwrite every machine's spaces); subcommands pass through |
 
 What it records: `~/.config/herdr-app/data/shepherdr/installed.json`, a sha256 per file it put there. Running it
 again changes only what changed; a file you edited since is kept (the new copy goes beside it as `.new`), except a
